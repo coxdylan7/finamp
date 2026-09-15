@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "djc.finamp",
+  "name": "Finamp",
+  "version": "0.1.0",
+  "author": "djc",
+  "license": "MIT",
+  "description": "Winamp × VLC style media player for Omarchy — stream or download from a Tailscale Jellyfin/Plex server. Spectrum visualizer, seek/volume/speed HUD, 10-band EQ, playlist queue, library browser (Movies/Shows/Tracks/Albums), poster art, discovery of tailnet media servers via Tailscale MagicDNS. QML playback (QtMultimedia) with mpv fallback.",
+  "kinds": ["service", "bar-widget", "overlay"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml",
+    "overlay": "Dash.qml"
+  },
+  "barWidget": {
+    "displayName": "Finamp",
+    "description": "Winamp×VLC tailscale media player — Jellyfin/Plex stream + download",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
