@@ -130,15 +130,18 @@ def valid_host(url):
     return h.endswith(".ts.net")
 
 def main():
-    if len(sys.argv) not in (5, 6):
-        fail("usage: fetch-media.py <serverUrl> <apiKey> <userIdOrEmpty> <cachePath> [<libraryFilter>]")
+    if len(sys.argv) not in (5, 6, 7):
+        fail("usage: fetch-media.py <serverUrl> <apiKey> <userIdOrEmpty> <cachePath> [<libraryFilter>] [<parentId>]")
     server = sys.argv[1].strip()
     api_key = sys.argv[2]
     user_id = sys.argv[3].strip()
     cache = sys.argv[4]
     library_filter = (sys.argv[5] if len(sys.argv) > 5 else "music").strip().lower()
+    parent_id = (sys.argv[6] if len(sys.argv) > 6 else "").strip()
     if library_filter not in ("all", "movies", "music"):
         fail("libraryFilter must be all|movies|music")
+    if len(parent_id) > 128 or any(c in parent_id for c in ["\n", "\r", "\x00"]):
+        fail("parentId invalid")
 
     validate_cache_path(cache)
 
@@ -215,46 +218,76 @@ def main():
             out_json(result)
             return
 
-        views = get_json(f"/Users/{uid}/Views")
-        vout = []
-        for v in (views.get("Items") if isinstance(views, dict) else views) or []:
-            if isinstance(v, dict) and v.get("Id"):
-                vout.append(v)
-        result["views"] = vout
-
-        view_parent = ""
-        if library_filter != "all":
-            want = {"music": "music", "movies": "movies"}[library_filter]
-            for v_ in vout:
-                if str(v_.get("CollectionType") or "") == want:
-                    view_parent = str(v_.get("Id") or "")
-                    break
         item_types = {
             "all": "Movie,Series,Season,Episode,MusicAlbum,Audio,MusicArtist,Video",
             "music": "Audio,MusicAlbum,MusicArtist",
             "movies": "Movie",
         }[library_filter]
 
-        items = []
-        start = 0
-        while start < PAGE_LIMIT:
-            page = get_json(f"/Users/{uid}/Items", {
-                "ParentId": view_parent, "Recursive": "true",
-                "IncludeItemTypes": item_types,
-                "Fields": "Overview,ProductionYear,RuntimeTicks,PrimaryImageAspectRatio",
-                "SortBy": "SortName", "SortOrder": "Ascending",
-                "StartIndex": str(start), "Limit": str(ITEM_LIMIT)
-            })
-            batch = page.get("Items") or []
-            for it in batch:
-                if isinstance(it, dict) and it.get("Id"):
-                    items.append(it)
-            total = int(page.get("TotalRecordCount") or (start + len(batch)))
-            start += len(batch)
-            if len(batch) < ITEM_LIMIT or start >= total:
-                break
-        result["items"] = items
-        result["ok"] = True
+        if parent_id:
+            result["views"] = cached.get("views", []) if isinstance(cached, dict) else []
+            items = []
+            try:
+                parent_item = get_json(f"/Users/{uid}/Items/{parent_id}")
+                if isinstance(parent_item, dict) and parent_item.get("Id"):
+                    items.append(parent_item)
+            except Exception:
+                pass
+            start = 0
+            while start < PAGE_LIMIT:
+                page = get_json(f"/Users/{uid}/Items", {
+                    "ParentId": parent_id, "Recursive": "true",
+                    "IncludeItemTypes": item_types,
+                    "Fields": "Overview,ProductionYear,RuntimeTicks,PrimaryImageAspectRatio",
+                    "SortBy": "SortName", "SortOrder": "Ascending",
+                    "StartIndex": str(start), "Limit": str(ITEM_LIMIT)
+                })
+                batch = page.get("Items") or []
+                for it in batch:
+                    if isinstance(it, dict) and it.get("Id"):
+                        items.append(it)
+                total = int(page.get("TotalRecordCount") or (start + len(batch)))
+                start += len(batch)
+                if len(batch) < ITEM_LIMIT or start >= total:
+                    break
+            result["items"] = items
+            result["ok"] = True
+        else:
+            views = get_json(f"/Users/{uid}/Views")
+            vout = []
+            for v in (views.get("Items") if isinstance(views, dict) else views) or []:
+                if isinstance(v, dict) and v.get("Id"):
+                    vout.append(v)
+            result["views"] = vout
+
+            view_parent = ""
+            if library_filter != "all":
+                want = {"music": "music", "movies": "movies"}[library_filter]
+                for v_ in vout:
+                    if str(v_.get("CollectionType") or "") == want:
+                        view_parent = str(v_.get("Id") or "")
+                        break
+
+            items = []
+            start = 0
+            while start < PAGE_LIMIT:
+                page = get_json(f"/Users/{uid}/Items", {
+                    "ParentId": view_parent, "Recursive": "true",
+                    "IncludeItemTypes": item_types,
+                    "Fields": "Overview,ProductionYear,RuntimeTicks,PrimaryImageAspectRatio",
+                    "SortBy": "SortName", "SortOrder": "Ascending",
+                    "StartIndex": str(start), "Limit": str(ITEM_LIMIT)
+                })
+                batch = page.get("Items") or []
+                for it in batch:
+                    if isinstance(it, dict) and it.get("Id"):
+                        items.append(it)
+                total = int(page.get("TotalRecordCount") or (start + len(batch)))
+                start += len(batch)
+                if len(batch) < ITEM_LIMIT or start >= total:
+                    break
+            result["items"] = items
+            result["ok"] = True
     except urllib.error.HTTPError as e:
         result["error"] = "http:" + str(e.code)
         if e.code == 401:

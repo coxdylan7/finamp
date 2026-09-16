@@ -31,7 +31,6 @@ Item {
 
   property bool settingsOpen: false
   property bool eqOpen: false
-  property bool plOpen: false
   property string pendingPlName: ""
   property bool seekDrag: false
   property real volume: 1.0
@@ -39,6 +38,14 @@ Item {
   readonly property bool isVideo: media.hasVideo
   readonly property bool hasCurrent: svc && svc.current !== null
   property bool kindDropOpen: false
+  property var playlistPickerTarget: null
+  property string viewMode: "library"    // library | queue | playlists
+  property string viewingPlaylistId: ""  // non-empty when drilling into a playlist's items
+  function setView(m) {
+    root.viewMode = m
+    root.viewingPlaylistId = ""
+    if (svc) svc.showQueue = (m === "queue")
+  }
 
   function kindOptions() {
     if (svc && svc.libraryOnly === "music")
@@ -60,12 +67,20 @@ Item {
     var k = svc.kind
     var q = svc.query.trim().toLowerCase()
     var par = svc.parentFilter
+    var idParent = {}
+    for (var i = 0; i < items.length; i++) if (items[i] && items[i].id) idParent[String(items[i].id)] = String(items[i].parentId || "")
+    function isWithin(id, top) {
+      var cur = String(id); var guard = 0
+      while (cur && guard++ < 40) { if (cur === top) return true; cur = idParent[String(cur)] || "" }
+      return false
+    }
     var out = []
-    for (var i = 0; i < items.length; i++) {
-      var it = items[i]
+    for (var i2 = 0; i2 < items.length; i2++) {
+      var it = items[i2]
       if (!it) continue
+      if (String(it.id) === par) continue
+      if (par && !isWithin(String(it.id), par)) continue
       if (k !== "all" && String(it.type) !== k) continue
-      if (par && String(it.parentId) !== par) continue
       if (q && String(it.name + " " + it.artist + " " + it.album).toLowerCase().indexOf(q) === -1) continue
       out.push(it)
     }
@@ -87,7 +102,47 @@ Item {
     if (svc) svc.createPlaylist(n)
     root.pendingPlName = ""
     plNewInput.text = ""
-    root.plOpen = true
+  }
+  function playlistRows() {
+    var out = []
+    if (!svc) return out
+    var pls = svc.playlists || []
+    for (var i = 0; i < pls.length; i++) out.push({ playlist: pls[i], idx: i })
+    return out
+  }
+  function playlistItemRows() {
+    var out = []
+    if (!svc || !root.viewingPlaylistId) return out
+    var p = svc.playlistForId(root.viewingPlaylistId)
+    if (!p) return out
+    var map = {}
+    for (var i = 0; i < svc.dataItems.length; i++) { var it = svc.dataItems[i]; if (it && it.id) map[String(it.id)] = it }
+    var ids = p.itemIds || []
+    for (var j = 0; j < ids.length; j++) {
+      var rec = map[String(ids[j])]
+      if (rec && !rec.isFolder) out.push({ it: rec, idx: j, cur: svc.current && String(svc.current.id) === String(rec.id) })
+    }
+    return out
+  }
+  function inPlaylist(pl, rec) {
+    if (!pl || !rec || !rec.id) return false
+    var key = String(rec.id)
+    var ids = pl.itemIds || []
+    for (var i = 0; i < ids.length; i++) if (String(ids[i]) === key) return true
+    return false
+  }
+  function parentPath() {
+    var names = []
+    var id = svc ? svc.parentFilter : ""
+    var guard = 0
+    while (id && guard++ < 24) {
+      var found = null
+      for (var i = 0; i < svc.dataItems.length; i++) if (String(svc.dataItems[i].id) === String(id)) { found = svc.dataItems[i]; break }
+      if (!found) break
+      names.unshift(String(found.name || "?"))
+      id = found.parentId ? String(found.parentId) : ""
+    }
+    return names.join(" › ") || "…"
   }
   function parentName() {
     if (!ready || !svc.parentFilter) return ""
@@ -176,9 +231,8 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
       border.color: Util.alpha(Color.foreground, 0.14)
       layer.enabled: true
 
-MouseArea { anchors.fill: parent; onClicked: { root.plOpen = false; root.kindDropOpen = false } }
-
       Rectangle {
+        id: dashContent
         anchors.fill: parent; radius: 22; clip: true; color: "transparent"
         focus: root.dashVisible
         Keys.onSpacePressed: { event.accepted = true; root.playPause() }
@@ -187,9 +241,9 @@ MouseArea { anchors.fill: parent; onClicked: { root.plOpen = false; root.kindDro
         Keys.onUpPressed: { event.accepted = true; root.volBy(0.05) }
         Keys.onDownPressed: { event.accepted = true; root.volBy(-0.05) }
         Keys.onPressed: function(event) {
-          if (event.key === Qt.Key_L) { event.accepted = true; if (svc) svc.showQueue = !svc.showQueue }
+          if (event.key === Qt.Key_L) { event.accepted = true; root.setView(svc && svc.showQueue ? "library" : "queue") }
           else if (event.key === Qt.Key_M) { event.accepted = true; root.volume = root.volume > 0 ? 0 : 1.0 }
-          else if (event.key === Qt.Key_Escape) { event.accepted = true; root.kindDropOpen = false; root.settingsOpen = false }
+          else if (event.key === Qt.Key_Escape) { event.accepted = true; if (kindPopup.opened) kindPopup.close(); if (playlistPopup.opened) playlistPopup.close(); root.settingsOpen = false }
         }
 
         ColumnLayout {
@@ -304,7 +358,7 @@ MouseArea { anchors.fill: parent; onClicked: { root.plOpen = false; root.kindDro
                 Comp.TransportButton { Layout.preferredWidth: 34; Layout.preferredHeight: 34; glyph: "◼"; glyphSize: 13; onClicked: { if (svc) svc.phase = "stopped" } }
                 Item { Layout.fillWidth: true }
                 Comp.TransportButton { Layout.preferredWidth: 34; Layout.preferredHeight: 34; glyph: "↗"; glyphSize: 12; onClicked: { if (svc) svc.openInMpv(svc.current) } }
-                Comp.TransportButton { Layout.preferredWidth: 74; Layout.preferredHeight: 34; radius: 17; glyph: svc && svc.current && svc.isDownloaded(svc.current) ? "✓" : "⤓"; label: svc && svc.current && svc.isDownloaded(svc.current) ? "OFFLOAD" : "SAVE"; glyphSize: 12; selected: svc && svc.current && svc.isDownloaded(svc.current); onClicked: { if (svc && svc.current) svc.isDownloaded(svc.current) ? svc.offload(svc.current) : svc.download(svc.current) } }
+                Comp.TransportButton { Layout.preferredWidth: 74; Layout.preferredHeight: 34; radius: 17; glyph: svc && svc.downloading ? "…" : (svc && svc.current && svc.isDownloaded(svc.current) ? "✓" : "⤓"); label: svc && svc.downloading ? "SAVING" : svc && svc.current && svc.isDownloaded(svc.current) ? "OFFLOAD" : "SAVE"; glyphSize: 12; selected: svc && svc.current && svc.isDownloaded(svc.current); onClicked: { if (svc && svc.current) svc.isDownloaded(svc.current) ? svc.offload(svc.current) : svc.download(svc.current) } }
               }
 
               // seek
@@ -380,15 +434,39 @@ MouseArea { anchors.fill: parent; onClicked: { root.plOpen = false; root.kindDro
               Layout.fillHeight: true
               spacing: 8
 
-              // filter dropdown + up + search + queue toggle
+              // mode tabs + library browse controls
               RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
                 z: 3
-                Comp.TransportButton { width: 30; height: 26; radius: 13; Layout.preferredWidth: 30; Layout.preferredHeight: 26; glyph: "↩"; glyphSize: 12; visible: svc && !!svc.parentFilter; onClicked: { if (svc) { svc.parentFilter = ""; svc.showQueue = false } } }
+                Repeater {
+                  model: [
+                    { m: "library",   g: "▦", l: "LIBRARY" },
+                    { m: "queue",     g: "⧉", l: "QUEUE" },
+                    { m: "playlists", g: "▤", l: "PLAYLISTS" }
+                  ]
+                  delegate: Rectangle {
+                    required property var modelData
+                    Layout.preferredWidth: 94; Layout.preferredHeight: 26
+                    radius: 13
+                    color: root.viewMode === modelData.m ? Util.alpha(Color.accent, 0.2) : Util.alpha(Color.foreground, 0.05)
+                    border.width: 1
+                    border.color: root.viewMode === modelData.m ? Util.alpha(Color.accent, 0.55) : Util.alpha(Color.accent, 0.3)
+                    RowLayout { anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 8; spacing: 5
+                      Text { text: modelData.g; color: root.viewMode === modelData.m ? Color.accent : Util.alpha(Color.foreground, 0.6); font.pixelSize: 10 }
+                      Text { Layout.fillWidth: true; elide: Text.ElideRight; text: modelData.l; color: root.viewMode === modelData.m ? Color.accent : Util.alpha(Color.foreground, 0.75); font.family: Style.font.family; font.pixelSize: 9; font.bold: true }
+                      Text { visible: modelData.m === "queue" && svc; text: svc ? String(svc.queue.length) : ""; color: Util.alpha(Color.accent, 0.9); font.pixelSize: 8; font.bold: true }
+                      Text { visible: modelData.m === "playlists" && svc; text: svc ? String(svc.playlists.length) : ""; color: Util.alpha(Color.accent, 0.9); font.pixelSize: 8; font.bold: true }
+                    }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true; onClicked: root.setView(modelData.m) }
+                  }
+                }
+                Item { Layout.fillWidth: true; Layout.preferredHeight: 1 }
+                Comp.TransportButton { width: 30; height: 26; radius: 13; Layout.preferredWidth: 30; Layout.preferredHeight: 26; glyph: "↩"; glyphSize: 12; visible: root.viewMode === "library" && svc && !!svc.parentFilter; onClicked: { if (svc) svc.browseUp() } }
                 Item {
                   id: kindDrop
-                  Layout.preferredWidth: 132; Layout.preferredHeight: 26
+                  visible: root.viewMode === "library"
+                  Layout.preferredWidth: 150; Layout.preferredHeight: 26
                   Rectangle {
                     anchors.fill: parent
                     radius: 13
@@ -398,100 +476,94 @@ MouseArea { anchors.fill: parent; onClicked: { root.plOpen = false; root.kindDro
                       Text { Layout.fillWidth: true; elide: Text.ElideRight; text: root.filterLabel().toUpperCase(); color: root.kindDropOpen ? Color.accent : Util.alpha(Color.foreground, 0.75); font.family: Style.font.family; font.pixelSize: 9; font.bold: true }
                       Text { text: "▾"; color: Util.alpha(Color.foreground, 0.55); font.pixelSize: 8 }
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true; onClicked: root.kindDropOpen = !root.kindDropOpen }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true; onClicked: { kindPopup.opened ? kindPopup.close() : kindPopup.open() } }
                   }
-                  Rectangle {
-                    y: parent.height + 4
-                    width: 170
-                    visible: root.kindDropOpen
-                    z: 30
-                    radius: 12
-                    color: Util.alpha(Color.background, 0.98)
-                    border.width: 1; border.color: Util.alpha(Color.foreground, 0.16)
-                    layer.enabled: true
-                    Column {
+
+                  // ============ BROWSE MENU (QQC.Popup — escapes clipping, closes on outside press) ============
+                  Popup {
+                    id: kindPopup
+                    x: kindDrop.width - 190
+                    y: kindDrop.height + 6
+                    width: 190
+                    padding: 0
+                    modal: false
+                    focus: true
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    onOpened: root.kindDropOpen = true
+                    onClosed: root.kindDropOpen = false
+                    background: Rectangle { radius: 12; color: Util.alpha(Color.background, 0.98); border.width: 1; border.color: Util.alpha(Color.accent, 0.35) }
+                    contentItem: Column {
+                      Rectangle { width: parent.width; height: 22; color: "transparent"
+                        Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: "BROWSE"; color: Util.alpha(Color.accent, 0.85); font.family: Style.font.family; font.pixelSize: 8; font.bold: true }
+                      }
                       Repeater {
                         model: root.kindOptions()
                         delegate: Rectangle {
                           required property var modelData
-                          width: 170; height: 30
+                          width: 190; height: 30
                           color: optHover.containsMouse || modelData.value === (svc && svc.kind) ? Util.alpha(Color.accent, 0.12) : "transparent"
                           RowLayout { anchors.left: parent.left; anchors.leftMargin: 12; anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 6
                             Text { Layout.fillWidth: true; elide: Text.ElideRight; text: modelData.label; color: modelData.value === (svc && svc.kind) ? Color.accent : Color.foreground; font.family: Style.font.family; font.pixelSize: 11; font.bold: modelData.value === (svc && svc.kind) }
                             Text { text: modelData.value === (svc && svc.kind) ? "✓" : ""; color: Color.accent; font.pixelSize: 10 }
                           }
-                          MouseArea { id: optHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (svc) { svc.kind = modelData.value; svc.showQueue = false } root.kindDropOpen = false; root.plOpen = false } }
+                          MouseArea { id: optHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (svc) { svc.kind = modelData.value; svc.showQueue = false } kindPopup.close() } }
                         }
                       }
                     }
                   }
-                }
-// playlist picker pill + menu
-                Item {
-                  id: plWrap
-                  Layout.preferredWidth: 150; Layout.preferredHeight: 26
-                  z: 40
-                  Rectangle {
-                    id: plPill
-                    anchors.fill: parent
-                    radius: 13
-                    color: root.plOpen ? Util.alpha(Color.accent, 0.18) : Util.alpha(Color.foreground, 0.05)
-                    border.width: 1; border.color: root.plOpen ? Util.alpha(Color.accent, 0.55) : Util.alpha(Color.accent, 0.3)
-                    RowLayout { anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 8; spacing: 6
-                      Text { Layout.fillWidth: true; elide: Text.ElideRight; text: "▤ " + (root.playlistName() || "PLAYLISTS"); color: root.plOpen ? Color.accent : Util.alpha(Color.foreground, 0.75); font.family: Style.font.family; font.pixelSize: 9; font.bold: true }
-                      Text { text: "▾"; color: Util.alpha(Color.foreground, 0.55); font.pixelSize: 8 }
-                    }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true; onClicked: root.plOpen = !root.plOpen }
-                  }
-                  Rectangle {
-                    id: plMenu
-                    visible: root.plOpen
-                    anchors.top: parent.bottom
-                    anchors.topMargin: 6
-                    anchors.left: parent.left
-                    width: 230
-                    z: 41
-                    radius: 12
-                    color: Util.alpha(Color.background, 0.98)
-                    border.width: 1; border.color: Util.alpha(Color.accent, 0.25)
-                    layer.enabled: true
-                    Column {
-                      width: parent.width
-                      spacing: 2
-                      Rectangle { width: parent.width; height: 30; color: Util.alpha(Color.accent, 0.1); border.width: 1; border.color: Util.alpha(Color.foreground, 0.12)
-                        RowLayout { anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 6; spacing: 6
-                          TextInput { id: plNewInput; Layout.fillWidth: true; Layout.preferredHeight: 30; verticalAlignment: TextInput.AlignVCenter; color: Color.foreground; font.family: Style.font.family; font.pixelSize: 10; text: root.pendingPlName || ""; onTextChanged: root.pendingPlName = text; Keys.onReturnPressed: root.createFromInput(); Keys.onEnterPressed: root.createFromInput() }
-                          Comp.TransportButton { width: 24; height: 24; glyph: "✓"; glyphSize: 9; onClicked: root.createFromInput() }
+
+                  // ============ PLAYLIST PICKER (QQC.Popup — escapes clipping, closes on outside press) ============
+                  Popup {
+                    id: playlistPopup
+                    x: kindDrop.width - 210
+                    y: kindDrop.height + 6
+                    width: 210
+                    padding: 0
+                    modal: false
+                    focus: true
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    onClosed: root.playlistPickerTarget = null
+                    background: Rectangle { radius: 12; color: Util.alpha(Color.background, 0.98); border.width: 1; border.color: Util.alpha(Color.accent, 0.3) }
+                    contentItem: Column {
+                      RowLayout { width: parent.width; spacing: 6
+                        Text {
+                          Layout.fillWidth: true
+                          elide: Text.ElideRight
+                          text: "▤ ADD TO PLAYLIST" + (root.playlistPickerTarget ? " — “" + String(root.playlistPickerTarget.name || "") + "”" : "")
+                          color: Util.alpha(Color.accent, 0.9); font.family: Style.font.family; font.pixelSize: 8; font.bold: true
                         }
+                        Comp.TransportButton { Layout.preferredWidth: 22; Layout.preferredHeight: 22; glyph: "✕"; glyphSize: 9; onClicked: playlistPopup.close() }
                       }
+                      Rectangle { width: parent.width; height: 1; color: Util.alpha(Color.foreground, 0.08) }
                       Repeater {
                         model: (svc && svc.playlists) || []
-                        delegate: RowLayout {
+                        delegate: Rectangle {
                           required property var modelData
                           property var pl: modelData
-                          Layout.fillWidth: true
-                          Layout.preferredHeight: 30
-                          spacing: 2
-                          Item { Layout.preferredWidth: 10; Layout.preferredHeight: 1 }
-                          Text {
-                            Layout.fillWidth: true
-                            elide: Text.ElideRight
-                            text: String((pl && pl.name) || "")
-                            color: svc && svc.activePlaylistId === String(pl && pl.id) ? Color.accent : Util.alpha(Color.foreground, 0.78)
-                            font.family: Style.font.family; font.pixelSize: 10; font.bold: svc && svc.activePlaylistId === String(pl && pl.id)
-                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true; onClicked: { if (svc && pl) { svc.activePlaylistId = String(pl.id); svc.statusText = "playlist: " + String(pl.name || "") } root.plOpen = false } }
+                          width: 210; height: 30
+                          color: ph.containsMouse ? Util.alpha(Color.accent, 0.12) : "transparent"
+                          RowLayout { anchors.left: parent.left; anchors.leftMargin: 12; anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 8
+                            Text { Layout.fillWidth: true; elide: Text.ElideRight; text: String(pl && pl.name || ""); color: Color.foreground; font.family: Style.font.family; font.pixelSize: 11 }
+                            Text { text: String(pl && (pl.itemIds || []).length || 0); color: Util.alpha(Color.foreground, 0.45); font.family: Style.font.family; font.pixelSize: 9 }
+                            Text { text: root.inPlaylist(pl, root.playlistPickerTarget) ? "✓" : ""; color: Color.accent; font.pixelSize: 10; font.bold: true }
                           }
-                          Text { Layout.preferredWidth: 30; horizontalAlignment: Text.AlignRight; text: String((pl && pl.itemIds) ? pl.itemIds.length : 0); color: Util.alpha(Color.foreground, 0.45); font.family: Style.font.family; font.pixelSize: 8 }
-                          Comp.TransportButton { Layout.preferredWidth: 22; Layout.preferredHeight: 22; glyph: "▶"; glyphSize: 8; visible: pl && (pl.itemIds || []).length > 0; onClicked: { if (svc) svc.playPlaylist(pl.id); root.plOpen = false } }
-                          Comp.TransportButton { Layout.preferredWidth: 22; Layout.preferredHeight: 22; glyph: "🗑"; glyphSize: 9; onClicked: { if (svc && pl) svc.removePlaylist(pl.id); root.plOpen = false } }
-                          Item { Layout.preferredWidth: 4; Layout.preferredHeight: 1 }
+                          MouseArea {
+                            id: ph
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: { if (svc && pl && root.playlistPickerTarget) { svc.addToPlaylist(String(pl.id), root.playlistPickerTarget); svc.statusText = "playlist “" + String(pl.name || "?") + "” + " + String(root.playlistPickerTarget.name || "") } playlistPopup.close() }
+                          }
                         }
+                      }
+                      Rectangle { width: parent.width; height: 34; color: "transparent"; visible: !(svc && svc.playlists && svc.playlists.length)
+                        Text { anchors.centerIn: parent; text: "no playlists yet — create one in PLAYLISTS"; color: Util.alpha(Color.foreground, 0.5); font.family: Style.font.family; font.pixelSize: 9 }
                       }
                     }
                   }
                 }
-               Rectangle {
-                 Layout.preferredWidth: 150; Layout.preferredHeight: 26; radius: 13
+                // search box (library browse mode)
+                Rectangle {
+                  visible: root.viewMode === "library"
+                  Layout.preferredWidth: 150; Layout.preferredHeight: 26; radius: 13
                   color: Util.alpha(Color.foreground, 0.05); border.width: 1; border.color: Util.alpha(Color.accent, 0.25)
                   TextInput {
                     id: searchInput
@@ -511,42 +583,85 @@ MouseArea { anchors.fill: parent; onClicked: { root.plOpen = false; root.kindDro
                   }
                   Text { anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; visible: searchInput.text !== ""; text: "✕"; color: Util.alpha(Color.foreground, 0.5); font.pixelSize: 10; MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { searchInput.text = "" } } }
                 }
-                Rectangle {
-                  Layout.preferredWidth: 92; Layout.preferredHeight: 26; radius: 13
-                  color: svc && svc.showQueue ? Util.alpha(Color.accent, 0.2) : Util.alpha(Color.foreground, 0.05)
-                  border.width: 1; border.color: Util.alpha(Color.accent, 0.45)
-                  RowLayout { anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 8; spacing: 4
-                    Text { Layout.fillWidth: true; elide: Text.ElideRight; text: "QUEUE " + (svc ? svc.queue.length : 0); color: svc && svc.showQueue ? Color.accent : Util.alpha(Color.foreground, 0.7); font.family: Style.font.family; font.pixelSize: 9; font.bold: true }
-                    Text { text: "✕"; visible: svc && svc.showQueue && svc.queue.length > 0; color: Color.urgent; font.pixelSize: 10; font.bold: true; MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { if (svc) svc.clearQueue() } } }
-                  }
-                  MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { if (svc) svc.showQueue = !svc.showQueue } }
-                }
               }
 
               // breadcrumb when drilling into a folder
               Text {
                 Layout.fillWidth: true
-                visible: svc && !!svc.parentFilter
-                text: "📍 " + root.parentName() + " — " + root.libraryRows().length + " results (click ↩ to go up)"
+                visible: root.viewMode === "library" && svc && !!svc.parentFilter
+                text: "📍 " + root.parentPath() + " — " + root.libraryRows().length + " results (click ↩ to go up)"
                 color: Util.alpha(Color.foreground, 0.4); font.family: Style.font.family; font.pixelSize: 8
               }
 
               // queue header
-              Text {
+              RowLayout {
                 Layout.fillWidth: true
-                visible: svc && svc.showQueue
-                text: "📻 QUEUE — " + (svc ? svc.queue.length : 0) + " track(s)" + (svc && svc.queueIndex >= 0 && svc.queue[svc.queueIndex] ? " · now playing #" + (svc.queueIndex + 1) : " · nothing loaded")
-                color: Util.alpha(Color.accent, 0.7); font.family: Style.font.family; font.pixelSize: 8; font.bold: true
+                visible: root.viewMode === "queue"
+                spacing: 6
+                Text {
+                  Layout.fillWidth: true
+                  elide: Text.ElideRight
+                  text: "📻 QUEUE — " + (svc ? svc.queue.length : 0) + " track(s)" + (svc && svc.queueIndex >= 0 && svc.queue[svc.queueIndex] ? " · now playing #" + (svc.queueIndex + 1) : " · nothing loaded")
+                  color: Util.alpha(Color.accent, 0.75); font.family: Style.font.family; font.pixelSize: 8; font.bold: true
+                }
+                Comp.TransportButton { width: 64; height: 24; radius: 12; Layout.preferredWidth: 64; Layout.preferredHeight: 24; glyph: "✕"; label: "CLEAR"; glyphSize: 9; visible: svc && svc.queue.length > 0; onClicked: { if (svc) svc.clearQueue() } }
               }
 
-              // rows
+              // playlists: create row (root level)
+              RowLayout {
+                Layout.fillWidth: true
+                visible: root.viewMode === "playlists" && root.viewingPlaylistId === ""
+                spacing: 6
+                Text {
+                  Layout.preferredWidth: 104
+                  elide: Text.ElideRight
+                  text: "▤ PLAYLISTS — " + (svc ? String(svc.playlists.length) : "0")
+                  color: Util.alpha(Color.accent, 0.75); font.family: Style.font.family; font.pixelSize: 8; font.bold: true
+                }
+                Rectangle {
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: 26; radius: 13
+                  color: Util.alpha(Color.foreground, 0.05); border.width: 1; border.color: Util.alpha(Color.accent, 0.25)
+                  TextInput {
+                    id: plNewInput
+                    anchors.fill: parent
+                    anchors.leftMargin: 12; anchors.rightMargin: 10
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: Color.foreground; font.family: Style.font.family; font.pixelSize: 10
+                    Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; visible: plNewInput.text.length === 0; text: "new playlist name…"; color: Util.alpha(Color.foreground, 0.4); font.family: Style.font.family; font.pixelSize: 10; MouseArea { anchors.fill: parent; cursorShape: Qt.IBeamCursor; onClicked: plNewInput.forceActiveFocus() } }
+                    text: root.pendingPlName || ""
+                    onTextChanged: root.pendingPlName = text
+                    Keys.onReturnPressed: root.createFromInput()
+                    Keys.onEnterPressed: root.createFromInput()
+                  }
+                }
+                Comp.TransportButton { width: 88; height: 26; radius: 13; Layout.preferredWidth: 88; Layout.preferredHeight: 26; glyph: "＋"; label: "CREATE"; glyphSize: 10; onClicked: root.createFromInput() }
+              }
+
+              // playlists: drilled-in header
+              RowLayout {
+                Layout.fillWidth: true
+                visible: root.viewMode === "playlists" && root.viewingPlaylistId !== ""
+                spacing: 6
+                Comp.TransportButton { width: 30; height: 26; radius: 13; Layout.preferredWidth: 30; Layout.preferredHeight: 26; glyph: "↩"; glyphSize: 12; onClicked: root.viewingPlaylistId = "" }
+                Text {
+                  Layout.fillWidth: true
+                  elide: Text.ElideRight
+                  text: "▤ " + (svc && svc.playlistForId(root.viewingPlaylistId) ? String(svc.playlistForId(root.viewingPlaylistId).name || "") : "PLAYLIST") + " — " + String(svc ? svc.playlistCount(root.viewingPlaylistId) : 0) + " tracks"
+                  color: Util.alpha(Color.accent, 0.75); font.family: Style.font.family; font.pixelSize: 8; font.bold: true
+                }
+                Comp.TransportButton { width: 88; height: 26; radius: 13; Layout.preferredWidth: 88; Layout.preferredHeight: 26; glyph: "▶"; label: "PLAY ALL"; glyphSize: 9; visible: svc && svc.playlistCount(root.viewingPlaylistId) > 0; onClicked: { if (svc) svc.playPlaylist(root.viewingPlaylistId) } }
+              }
+
+              // rows: media (library / queue / playlist items)
               ListView {
                 id: libList
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
                 spacing: 6
-                model: svc && svc.showQueue ? root.queueRows() : root.libraryRows()
+                visible: root.viewMode !== "playlists" || root.viewingPlaylistId !== ""
+                model: root.viewMode === "queue" ? root.queueRows() : root.viewMode === "playlists" ? root.playlistItemRows() : root.libraryRows()
                 delegate: Item {
                   required property var modelData
                   id: row
@@ -601,18 +716,62 @@ MouseArea { anchors.fill: parent; onClicked: { root.plOpen = false; root.kindDro
                       anchors.verticalCenter: parent.verticalCenter
                       spacing: 6
                       z: 5
-                      Comp.TransportButton { width: 26; height: 26; glyph: svc && svc.isDownloaded(row.it) ? "⤓✓" : "⤓"; glyphSize: 10; selected: svc && svc.isDownloaded(row.it); visible: !(row.it && row.it.isFolder); onClicked: { if (svc) svc.download(row.it) } }
+                      Comp.TransportButton { width: 26; height: 26; glyph: svc && svc.isDownloaded(row.it) ? "⤓✓" : (svc && svc.downloading && String(svc.pendingDownloadId) === String(row.it && row.it.id) ? "…" : "⤓"); glyphSize: 10; selected: svc && svc.isDownloaded(row.it); visible: !(row.it && row.it.isFolder); onClicked: { if (svc && row.it) svc.isDownloaded(row.it) ? svc.offload(row.it) : svc.download(row.it) } }
                       Comp.TransportButton { width: 26; height: 26; glyph: "▶"; glyphSize: 9; visible: !(row.it && row.it.isFolder) && !(modelData.cur || (svc && svc.current && String(svc.current.id) === String(row.it.id))); onClicked: { if (svc) svc.playItem(row.it) } }
-                      Comp.TransportButton { width: 26; height: 26; glyph: "⧉"; glyphSize: 10; visible: !(row.it && row.it.isFolder); onClicked: { if (svc) svc.enqueue(row.it) } }
-                      Comp.TransportButton { width: 48; height: 26; glyph: "▤"; glyphSize: 10; label: root.pendingPlaylistId === (row.it && String(row.it.id)) ? "✓" : ""; visible: !(row.it && row.it.isFolder); onClicked: { if (svc) svc.togglePlaylistPill(row.it) } }
-                      Comp.TransportButton { width: 26; height: 26; glyph: "✕"; glyphSize: 10; selected: root.inQueue(row.it); visible: !(row.it && row.it.isFolder) && root.inQueue(row.it); onClicked: { if (svc) svc.removeFromQueue(row.it.id); if (svc) svc.statusText = "removed from queue: " + String(row.it.name || "") } }
+                      Comp.TransportButton { width: 26; height: 26; glyph: "⧉"; glyphSize: 10; visible: !(row.it && row.it.isFolder) && root.viewMode !== "queue"; onClicked: { if (svc) svc.enqueue(row.it) } }
+                      Comp.TransportButton { width: 48; height: 26; glyph: "▤"; glyphSize: 10; visible: !(row.it && row.it.isFolder) && root.viewMode === "library"; onClicked: { if (kindPopup.opened) kindPopup.close(); root.playlistPickerTarget = row.it; playlistPopup.open() } }
+                      Comp.TransportButton { width: 26; height: 26; glyph: "✕"; glyphSize: 10; selected: root.viewMode === "queue" || root.inQueue(row.it) || root.viewMode === "playlists"; visible: !(row.it && row.it.isFolder) && (root.inQueue(row.it) || root.viewMode === "queue" || (root.viewMode === "playlists" && root.viewingPlaylistId !== "")); onClicked: { if (root.viewMode === "playlists" && root.viewingPlaylistId !== "") { if (svc) svc.removeFromPlaylist(root.viewingPlaylistId, row.it); if (svc) svc.statusText = "removed from playlist: " + String(row.it.name || "") } else { if (svc) svc.removeFromQueue(row.it.id); if (svc) svc.statusText = "removed from queue: " + String(row.it.name || "") } } }
                     }
+                  }
+                }
+              }
+
+              // rows: playlist list (root level)
+              ListView {
+                id: playlistList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: 6
+                visible: root.viewMode === "playlists" && root.viewingPlaylistId === ""
+                model: root.playlistRows()
+                delegate: Rectangle {
+                  required property var modelData
+                  property var pl: modelData.playlist
+                  width: ListView.view.width - 4
+                  height: 46
+                  radius: 11
+                  color: mHover.containsMouse ? Util.alpha(Color.foreground, 0.09) : (svc && svc.activePlaylistId === String(pl && pl.id) ? Util.alpha(Color.accent, 0.14) : Util.alpha(Color.foreground, 0.04))
+                  border.width: 1
+                  border.color: mHover.containsMouse ? Util.alpha(Color.accent, 0.55) : Util.alpha(Color.accent, 0.3)
+                  MouseArea {
+                    id: mHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: { if (svc && pl) { svc.activePlaylistId = String(pl.id); root.viewingPlaylistId = String(pl.id) } }
+                  }
+                  RowLayout {
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: 12; anchors.rightMargin: 8
+                    spacing: 8
+                    Text { text: "▤"; color: Color.accent; font.pixelSize: 13 }
+                    Column {
+                      Layout.fillWidth: true
+                      spacing: 1
+                      Text { width: parent.width; elide: Text.ElideRight; text: pl && String(pl.name || ""); color: Color.foreground; font.family: Style.font.family; font.pixelSize: 12; font.bold: true }
+                      Text { width: parent.width; elide: Text.ElideRight; text: (pl && pl.itemIds ? pl.itemIds.length : 0) + " track(s)" + (svc && svc.activePlaylistId === String(pl && pl.id) ? " · active" : ""); color: Util.alpha(Color.foreground, 0.55); font.family: Style.font.family; font.pixelSize: 9 }
+                    }
+                    Comp.TransportButton { width: 26; height: 26; glyph: "▶"; glyphSize: 9; visible: pl && (pl.itemIds || []).length > 0; onClicked: { if (svc) svc.playPlaylist(pl.id) } }
+                    Comp.TransportButton { width: 26; height: 26; glyph: "❤"; glyphSize: 10; selected: svc && svc.activePlaylistId === String(pl && pl.id); onClicked: { if (svc && pl) { svc.activePlaylistId = String(pl.id); svc.statusText = "playlist: " + String(pl.name || "") } } }
+                    Comp.TransportButton { width: 26; height: 26; glyph: "🗑"; glyphSize: 10; onClicked: { if (svc && pl) svc.removePlaylist(pl.id) } }
                   }
                 }
               }
             }
           }
         }
+
       }
 
       // ================= SETTINGS OVERLAY =================

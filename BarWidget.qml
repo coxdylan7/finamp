@@ -25,6 +25,13 @@ BarWidget {
   }
 
   readonly property bool isSaved: ready && service.current ? service.isDownloaded(service.current) : false
+  readonly property bool dlActive: ready && service.downloading
+  readonly property string statusLine: {
+    if (!ready) return "…"
+    if (service.downloading) return "⤓ downloading “" + String(service.pendingDownloadName || "…") + "” → " + (service.downloadDirPath || "Downloads/finamp")
+    if (service.current && service.isDownloaded(service.current)) return "saved ✓ " + (service.downloadedPathFor(service.current) || "")
+    return String(service.statusText || "")
+  }
 
   function nextUp() {
     var s = root.service
@@ -140,11 +147,13 @@ BarWidget {
         Comp.TransportButton { Layout.preferredWidth: 40; Layout.preferredHeight: 40; glyph: root.playing ? "❚❚" : "▶"; glyphSize: 16; selected: root.playing; onClicked: { if (service) service.togglePlay() } }
         Comp.TransportButton { Layout.preferredWidth: 30; Layout.preferredHeight: 30; glyph: "▶▶"; glyphSize: 11; onClicked: { if (service) service.playNext() } }
         Item { Layout.fillWidth: true }
-        Comp.TransportButton { Layout.preferredWidth: 74; Layout.preferredHeight: 30; radius: 15; glyph: root.isSaved ? "✓" : "⤓"; label: root.isSaved ? "OFFLOAD" : "SAVE"; glyphSize: 11; selected: root.isSaved; onClicked: { if (service) root.isSaved ? service.offload(service.current) : service.download(service.current) } }
+        Comp.TransportButton { Layout.preferredWidth: 74; Layout.preferredHeight: 30; radius: 15; glyph: root.dlActive ? "…" : (root.isSaved ? "✓" : "⤓"); label: root.dlActive ? "SAVING" : root.isSaved ? "OFFLOAD" : "SAVE"; glyphSize: 11; selected: root.isSaved; onClicked: { if (service) root.isSaved ? service.offload(service.current) : service.download(service.current) } }
         Comp.TransportButton { Layout.preferredWidth: 30; Layout.preferredHeight: 30; glyph: "↗"; glyphSize: 12; onClicked: { if (service) service.openInMpv(service.current) } }
       }
 
       Text { Layout.fillWidth: true; text: "library " + (service ? (service.dataItems.length + " items") : "…") + " · " + (service ? (service.queue.length + " queued") : ""); color: Util.alpha(Color.foreground, 0.4); font.family: Style.font.family; font.pixelSize: 9; elide: Text.ElideRight }
+
+      Text { Layout.fillWidth: true; text: root.statusLine; color: root.dlActive ? Color.accent : Util.alpha(Color.foreground, 0.5); font.family: Style.font.family; font.pixelSize: 9; elide: Text.ElideRight }
 
       Rectangle { Layout.fillWidth: true; height: 1; color: Util.alpha(Color.foreground, 0.08); visible: root.nextUp().length > 0 }
 

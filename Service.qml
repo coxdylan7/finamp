@@ -27,6 +27,7 @@ Item {
   readonly property string homeDir: Quickshell.env("HOME") || "~"
   readonly property string cacheDir: homeDir + "/.cache/omarchy/finamp"
   readonly property string cacheMedia: cacheDir + "/media.json"
+  readonly property string cacheBrowse: cacheDir + "/browse.json"
   readonly property string cacheProbe: cacheDir + "/discovery.json"
   readonly property string shellJson: homeDir + "/.config/omarchy/shell.json"
 
@@ -91,13 +92,26 @@ Item {
 
   function playItem(rec) {
     if (!rec) return
-    if (rec.isFolder) { root.parentFilter = String(rec.id); root.viewId = ""; root.showQueue = false; root.statusText = "Browsing " + rec.name + " — click ↩ to go up"; return }
+    if (rec.isFolder) { root.browseFolder(rec.id); return }
     var idx = root.queueIndexForId(rec.id)
     if (idx < 0) { root.queue = root.queue.concat([rec]); idx = root.queue.length - 1 }
     root.queueIndex = idx
     root.current = rec
     root.phase = "playing"
     console.log("finamp: play " + String(rec.name || rec.id))
+  }
+  function browseFolder(id) {
+    root.parentFilter = String(id || "")
+    root.viewId = ""
+    root.showQueue = false
+    root.statusText = "Browsing folder…"
+    root.refreshTick++
+    root.fetchMedia(null, null, root.parentFilter)
+  }
+  function browseUp() {
+    root.parentFilter = ""
+    root.statusText = "back to library…"
+    root.fetchMedia()
   }
   function playNext() {
     if (!root.queue.length) return
@@ -187,13 +201,14 @@ Item {
     probeProc.command = ["/usr/bin/python3", helperProbe, cacheProbe]
     probeProc.running = true
   }
-  function fetchMedia(explicitServer, explicitKey) {
+  function fetchMedia(explicitServer, explicitKey, parentId) {
     var srv = String(explicitServer || root.serverUrl || "")
     var key = String(explicitKey !== undefined ? explicitKey : root.apiKey || "")
     if (!srv) { root.mediaOk = false; return }
-    root.statusText = "fetching library from " + srv + "…"
+    var pid = String(parentId || "")
+    root.statusText = pid ? "browsing folder…" : "fetching library from " + srv + "…"
     mediaProc.collected = ""
-    mediaProc.command = ["/usr/bin/python3", helperMedia, srv, key, root.userId, cacheMedia, root.libraryOnly]
+    mediaProc.command = ["/usr/bin/python3", helperMedia, srv, key, root.userId, pid ? root.cacheBrowse : root.cacheMedia, root.libraryOnly, pid]
     mediaProc.running = true
   }
   function refresh() { root.refreshTick++; root.fetchMedia() }
@@ -271,7 +286,7 @@ Item {
     if (!rec || !rec.id) return
     var ext = root.extFor(rec)
     var safe = String(rec.name || rec.id).replace(/[\\/:*?"<>|]/g, "_").slice(0, 120) || "finamp-download"
-    var dir = root.downloadDirPath || (root.homeDir + "/Downloads")
+    var dir = root.downloadDirPath || (root.homeDir + "/Downloads/finamp")
     var out = dir + "/" + safe + "." + ext
     var u = root.downloadUrl(rec)
     if (!u) { root.statusText = "download: no URL"; return }
@@ -546,8 +561,7 @@ Item {
     stdout: SplitParser { onRead: function(d){ dlDirProc.collected += d + "\n" } }
     onExited: function(code, status){
       var d = String(dlDirProc.collected).trim()
-      root.downloadDirPath = (d && d.startsWith("/")) ? d : ""
-      if (code === 0 && root.downloadDirPath) root.downloadDirPath = root.downloadDirPath.replace(/\/+$/, "")
+      root.downloadDirPath = (d && d.startsWith("/")) ? d.replace(/\/+$/, "") + "/finamp" : ""
     }
   }
   Process {
@@ -593,7 +607,8 @@ Item {
     }
   }
   property var downloads: ({})
-  property string pendingDownloadId: ""
+  readonly property bool downloading: dlProc.running
+  property var pendingDownloadId: ""
   property string pendingDownloadName: ""
   property string pendingDownloadPath: ""
   property string pendingRemovedId: ""
