@@ -39,11 +39,14 @@ Item {
   readonly property bool hasCurrent: svc && svc.current !== null
   property bool kindDropOpen: false
   property var playlistPickerTarget: null
+  property var playlistAnchor: null       // row item the picker should be anchored to
   property string viewMode: "library"    // library | queue | playlists
   property string viewingPlaylistId: ""  // non-empty when drilling into a playlist's items
   function setView(m) {
     root.viewMode = m
     root.viewingPlaylistId = ""
+    root.kindDropOpen = false
+    root.playlistPickerTarget = null
     if (svc) svc.showQueue = (m === "queue")
   }
 
@@ -243,7 +246,7 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
         Keys.onPressed: function(event) {
           if (event.key === Qt.Key_L) { event.accepted = true; root.setView(svc && svc.showQueue ? "library" : "queue") }
           else if (event.key === Qt.Key_M) { event.accepted = true; root.volume = root.volume > 0 ? 0 : 1.0 }
-          else if (event.key === Qt.Key_Escape) { event.accepted = true; if (kindPopup.opened) kindPopup.close(); if (playlistPopup.opened) playlistPopup.close(); root.settingsOpen = false }
+          else if (event.key === Qt.Key_Escape) { event.accepted = true; root.kindDropOpen = false; root.playlistPickerTarget = null; root.settingsOpen = false }
         }
 
         ColumnLayout {
@@ -476,88 +479,7 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
                       Text { Layout.fillWidth: true; elide: Text.ElideRight; text: root.filterLabel().toUpperCase(); color: root.kindDropOpen ? Color.accent : Util.alpha(Color.foreground, 0.75); font.family: Style.font.family; font.pixelSize: 9; font.bold: true }
                       Text { text: "▾"; color: Util.alpha(Color.foreground, 0.55); font.pixelSize: 8 }
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true; onClicked: { kindPopup.opened ? kindPopup.close() : kindPopup.open() } }
-                  }
-
-                  // ============ BROWSE MENU (QQC.Popup — escapes clipping, closes on outside press) ============
-                  Popup {
-                    id: kindPopup
-                    x: kindDrop.width - 190
-                    y: kindDrop.height + 6
-                    width: 190
-                    padding: 0
-                    modal: false
-                    focus: true
-                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-                    onOpened: root.kindDropOpen = true
-                    onClosed: root.kindDropOpen = false
-                    background: Rectangle { radius: 12; color: Util.alpha(Color.background, 0.98); border.width: 1; border.color: Util.alpha(Color.accent, 0.35) }
-                    contentItem: Column {
-                      Rectangle { width: parent.width; height: 22; color: "transparent"
-                        Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: "BROWSE"; color: Util.alpha(Color.accent, 0.85); font.family: Style.font.family; font.pixelSize: 8; font.bold: true }
-                      }
-                      Repeater {
-                        model: root.kindOptions()
-                        delegate: Rectangle {
-                          required property var modelData
-                          width: 190; height: 30
-                          color: optHover.containsMouse || modelData.value === (svc && svc.kind) ? Util.alpha(Color.accent, 0.12) : "transparent"
-                          RowLayout { anchors.left: parent.left; anchors.leftMargin: 12; anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 6
-                            Text { Layout.fillWidth: true; elide: Text.ElideRight; text: modelData.label; color: modelData.value === (svc && svc.kind) ? Color.accent : Color.foreground; font.family: Style.font.family; font.pixelSize: 11; font.bold: modelData.value === (svc && svc.kind) }
-                            Text { text: modelData.value === (svc && svc.kind) ? "✓" : ""; color: Color.accent; font.pixelSize: 10 }
-                          }
-                          MouseArea { id: optHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (svc) { svc.kind = modelData.value; svc.showQueue = false } kindPopup.close() } }
-                        }
-                      }
-                    }
-                  }
-
-                  // ============ PLAYLIST PICKER (QQC.Popup — escapes clipping, closes on outside press) ============
-                  Popup {
-                    id: playlistPopup
-                    x: kindDrop.width - 210
-                    y: kindDrop.height + 6
-                    width: 210
-                    padding: 0
-                    modal: false
-                    focus: true
-                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-                    onClosed: root.playlistPickerTarget = null
-                    background: Rectangle { radius: 12; color: Util.alpha(Color.background, 0.98); border.width: 1; border.color: Util.alpha(Color.accent, 0.3) }
-                    contentItem: Column {
-                      RowLayout { width: parent.width; spacing: 6
-                        Text {
-                          Layout.fillWidth: true
-                          elide: Text.ElideRight
-                          text: "▤ ADD TO PLAYLIST" + (root.playlistPickerTarget ? " — “" + String(root.playlistPickerTarget.name || "") + "”" : "")
-                          color: Util.alpha(Color.accent, 0.9); font.family: Style.font.family; font.pixelSize: 8; font.bold: true
-                        }
-                        Comp.TransportButton { Layout.preferredWidth: 22; Layout.preferredHeight: 22; glyph: "✕"; glyphSize: 9; onClicked: playlistPopup.close() }
-                      }
-                      Rectangle { width: parent.width; height: 1; color: Util.alpha(Color.foreground, 0.08) }
-                      Repeater {
-                        model: (svc && svc.playlists) || []
-                        delegate: Rectangle {
-                          required property var modelData
-                          property var pl: modelData
-                          width: 210; height: 30
-                          color: ph.containsMouse ? Util.alpha(Color.accent, 0.12) : "transparent"
-                          RowLayout { anchors.left: parent.left; anchors.leftMargin: 12; anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                            Text { Layout.fillWidth: true; elide: Text.ElideRight; text: String(pl && pl.name || ""); color: Color.foreground; font.family: Style.font.family; font.pixelSize: 11 }
-                            Text { text: String(pl && (pl.itemIds || []).length || 0); color: Util.alpha(Color.foreground, 0.45); font.family: Style.font.family; font.pixelSize: 9 }
-                            Text { text: root.inPlaylist(pl, root.playlistPickerTarget) ? "✓" : ""; color: Color.accent; font.pixelSize: 10; font.bold: true }
-                          }
-                          MouseArea {
-                            id: ph
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: { if (svc && pl && root.playlistPickerTarget) { svc.addToPlaylist(String(pl.id), root.playlistPickerTarget); svc.statusText = "playlist “" + String(pl.name || "?") + "” + " + String(root.playlistPickerTarget.name || "") } playlistPopup.close() }
-                          }
-                        }
-                      }
-                      Rectangle { width: parent.width; height: 34; color: "transparent"; visible: !(svc && svc.playlists && svc.playlists.length)
-                        Text { anchors.centerIn: parent; text: "no playlists yet — create one in PLAYLISTS"; color: Util.alpha(Color.foreground, 0.5); font.family: Style.font.family; font.pixelSize: 9 }
-                      }
-                    }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true; onClicked: { if (root.playlistPickerTarget) root.playlistPickerTarget = null; root.kindDropOpen = !root.kindDropOpen } }
                   }
                 }
                 // search box (library browse mode)
@@ -719,7 +641,7 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
                       Comp.TransportButton { width: 26; height: 26; glyph: svc && svc.isDownloaded(row.it) ? "⤓✓" : (svc && svc.downloading && String(svc.pendingDownloadId) === String(row.it && row.it.id) ? "…" : "⤓"); glyphSize: 10; selected: svc && svc.isDownloaded(row.it); visible: !(row.it && row.it.isFolder); onClicked: { if (svc && row.it) svc.isDownloaded(row.it) ? svc.offload(row.it) : svc.download(row.it) } }
                       Comp.TransportButton { width: 26; height: 26; glyph: "▶"; glyphSize: 9; visible: !(row.it && row.it.isFolder) && !(modelData.cur || (svc && svc.current && String(svc.current.id) === String(row.it.id))); onClicked: { if (svc) svc.playItem(row.it) } }
                       Comp.TransportButton { width: 26; height: 26; glyph: "⧉"; glyphSize: 10; visible: !(row.it && row.it.isFolder) && root.viewMode !== "queue"; onClicked: { if (svc) svc.enqueue(row.it) } }
-                      Comp.TransportButton { width: 48; height: 26; glyph: "▤"; glyphSize: 10; visible: !(row.it && row.it.isFolder) && root.viewMode === "library"; onClicked: { if (kindPopup.opened) kindPopup.close(); root.playlistPickerTarget = row.it; playlistPopup.open() } }
+                      Comp.TransportButton { width: 48; height: 26; glyph: "▤"; glyphSize: 10; visible: !(row.it && row.it.isFolder) && root.viewMode === "library"; onClicked: { root.kindDropOpen = false; root.playlistPickerTarget = row.it; root.playlistAnchor = row } }
                       Comp.TransportButton { width: 26; height: 26; glyph: "✕"; glyphSize: 10; selected: root.viewMode === "queue" || root.inQueue(row.it) || root.viewMode === "playlists"; visible: !(row.it && row.it.isFolder) && (root.inQueue(row.it) || root.viewMode === "queue" || (root.viewMode === "playlists" && root.viewingPlaylistId !== "")); onClicked: { if (root.viewMode === "playlists" && root.viewingPlaylistId !== "") { if (svc) svc.removeFromPlaylist(root.viewingPlaylistId, row.it); if (svc) svc.statusText = "removed from playlist: " + String(row.it.name || "") } else { if (svc) svc.removeFromQueue(row.it.id); if (svc) svc.statusText = "removed from queue: " + String(row.it.name || "") } } }
                     }
                   }
@@ -841,6 +763,97 @@ MouseArea { anchors.fill: parent; onClicked: {} }
           RowLayout { Layout.fillWidth: true; spacing: 8
             Comp.TransportButton { Layout.preferredWidth: 110; Layout.preferredHeight: 30; radius: 15; label: "OPEN WEB"; glyph: "🌐"; glyphSize: 10; onClicked: { if (svc) svc.openWeb() } }
             Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: "serverUrl, apiKey and userId are stored in ~/.config/omarchy/shell.json (plaintext, chmod 600 via atomic write). Only http(s) tailscale hosts allowed."; color: Util.alpha(Color.foreground, 0.35); font.family: Style.font.family; font.pixelSize: 8 }
+          }
+        }
+      }
+    }
+
+    // ============ MENU OVERLAYS (rendered above the card, never clipped) ============
+    Item {
+      id: menuLayer
+      anchors.fill: parent
+      z: 100
+
+      // press-outside / scrim to dismiss whichever menu is open
+      MouseArea {
+        id: menuScrim
+        anchors.fill: parent
+        visible: root.kindDropOpen || !!root.playlistPickerTarget
+        onClicked: { root.kindDropOpen = false; root.playlistPickerTarget = null }
+      }
+
+      // ---- BROWSE MENU (All / Songs / Albums / Artists) ----
+      Rectangle {
+        id: browseOverlay
+        visible: root.kindDropOpen
+        width: 190
+        radius: 12
+        color: Util.alpha(Color.background, 0.98)
+        border.width: 1; border.color: Util.alpha(Color.accent, 0.35)
+        x: kindDrop.mapToItem(menuLayer, 0, 0).x + kindDrop.width - width
+        y: kindDrop.mapToItem(menuLayer, 0, 0).y + kindDrop.height + 6
+        Column {
+          Rectangle { width: parent.width; height: 22; color: "transparent"
+            Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: "BROWSE"; color: Util.alpha(Color.accent, 0.85); font.family: Style.font.family; font.pixelSize: 8; font.bold: true }
+          }
+          Repeater {
+            model: root.kindOptions()
+            delegate: Rectangle {
+              required property var modelData
+              width: 190; height: 30
+              color: optHover.containsMouse || modelData.value === (svc && svc.kind) ? Util.alpha(Color.accent, 0.12) : "transparent"
+              RowLayout { anchors.left: parent.left; anchors.leftMargin: 12; anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 6
+                Text { Layout.fillWidth: true; elide: Text.ElideRight; text: modelData.label; color: modelData.value === (svc && svc.kind) ? Color.accent : Color.foreground; font.family: Style.font.family; font.pixelSize: 11; font.bold: modelData.value === (svc && svc.kind) }
+                Text { text: modelData.value === (svc && svc.kind) ? "✓" : ""; color: Color.accent; font.pixelSize: 10 }
+              }
+              MouseArea { id: optHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (svc) { svc.kind = modelData.value; svc.showQueue = false } root.kindDropOpen = false } }
+            }
+          }
+        }
+      }
+
+      // ---- PLAYLIST PICKER (anchored to the row the ▤ button was pressed on) ----
+      Rectangle {
+        id: playlistOverlay
+        visible: !!root.playlistPickerTarget
+        width: 210
+        radius: 12
+        color: Util.alpha(Color.background, 0.98)
+        border.width: 1; border.color: Util.alpha(Color.accent, 0.3)
+        x: root.playlistAnchor ? root.playlistAnchor.mapToItem(menuLayer, 0, 0).x + root.playlistAnchor.width - width : 0
+        y: (root.playlistAnchor ? root.playlistAnchor.mapToItem(menuLayer, 0, 0).y + root.playlistAnchor.height + 6 : 0)
+        Column {
+          RowLayout { width: parent.width; spacing: 6
+            Text {
+              Layout.fillWidth: true
+              elide: Text.ElideRight
+              text: "▤ ADD TO PLAYLIST" + (root.playlistPickerTarget ? " — “" + String(root.playlistPickerTarget.name || "") + "”" : "")
+              color: Util.alpha(Color.accent, 0.9); font.family: Style.font.family; font.pixelSize: 8; font.bold: true
+            }
+            Comp.TransportButton { Layout.preferredWidth: 22; Layout.preferredHeight: 22; glyph: "✕"; glyphSize: 9; onClicked: root.playlistPickerTarget = null }
+          }
+          Rectangle { width: parent.width; height: 1; color: Util.alpha(Color.foreground, 0.08) }
+          Repeater {
+            model: (svc && svc.playlists) || []
+            delegate: Rectangle {
+              required property var modelData
+              property var pl: modelData
+              width: 210; height: 30
+              color: ph.containsMouse ? Util.alpha(Color.accent, 0.12) : "transparent"
+              RowLayout { anchors.left: parent.left; anchors.leftMargin: 12; anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 8
+                Text { Layout.fillWidth: true; elide: Text.ElideRight; text: String(pl && pl.name || ""); color: Color.foreground; font.family: Style.font.family; font.pixelSize: 11 }
+                Text { text: String(pl && (pl.itemIds || []).length || 0); color: Util.alpha(Color.foreground, 0.45); font.family: Style.font.family; font.pixelSize: 9 }
+                Text { text: root.inPlaylist(pl, root.playlistPickerTarget) ? "✓" : ""; color: Color.accent; font.pixelSize: 10; font.bold: true }
+              }
+              MouseArea {
+                id: ph
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: { if (svc && pl && root.playlistPickerTarget) { svc.addToPlaylist(String(pl.id), root.playlistPickerTarget); svc.statusText = "playlist “" + String(pl.name || "?") + "” + " + String(root.playlistPickerTarget.name || "") } root.playlistPickerTarget = null }
+              }
+            }
+          }
+          Rectangle { width: parent.width; height: 34; color: "transparent"; visible: !(svc && svc.playlists && svc.playlists.length)
+            Text { anchors.centerIn: parent; text: "no playlists yet — create one in PLAYLISTS"; color: Util.alpha(Color.foreground, 0.5); font.family: Style.font.family; font.pixelSize: 9 }
           }
         }
       }
