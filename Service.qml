@@ -612,7 +612,7 @@ Item {
     stderr: SplitParser { onRead: function(d){ dlProc.collected += d + "\n" } }
     onExited: function(code, status){
       if (code === 0) { root.statusText = "Downloaded ✓ → " + (root.downloadDirPath || "Downloads"); console.log("finamp: downloaded ok"); root.noteDownloaded(root.pendingDownloadId) }
-      else { root.statusText = "download failed (exit " + code + ")"; console.log("finamp download: " + String(root.dlProc.collected).slice(0, 200)) }
+      else { root.statusText = "download failed (exit " + code + ")"; console.log("finamp download: " + String(dlProc.collected).slice(0, 200)) }
     }
   }
   Process {
