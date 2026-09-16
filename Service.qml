@@ -220,7 +220,7 @@ Item {
       var c = JSON.parse(t)
       if (c && c.ok) {
         root.dataViews = (c.views || []).map(function(v){ return T.normalizeView(v) })
-        root.dataItems = (c.items || []).map(function(it){ return T.normalizeJellyfinItem(it) })
+        root.dataItems = root.reclassifyItems((c.items || []).map(function(it){ return T.normalizeJellyfinItem(it) }))
         root.serverName = String(c.serverName || "")
         root.serverVersion = String(c.serverVersion || "")
         root.userId = String(c.userId || "")
@@ -229,6 +229,47 @@ Item {
         console.log("finamp: cached " + root.dataItems.length + " items")
       }
     } catch(e) { }
+  }
+
+  // Detect MusicAlbum folders that are actually artist containers.
+  // Jellyfin sometimes misclassifies artist-level folders as MusicAlbum
+  // when the library is flat (no ParentId hierarchy).  Heuristic: if a
+  // MusicAlbum folder's name matches the artist prefix of audio tracks
+  // named "Artist – Track", reclassify it as MusicArtist.
+  function reclassifyItems(items) {
+    if (!items || items.length < 2) return items
+    var artistNames = {}
+    var i
+    for (i = 0; i < items.length; i++) {
+      var a = items[i]
+      if (a && a.type === "Audio" && a.name) {
+        var sep = a.name.indexOf(" - ")
+        if (sep < 0) sep = a.name.indexOf(" – ")
+        if (sep > 0) {
+          var artist = a.name.substring(0, sep).trim()
+          if (artist) artistNames[artist] = (artistNames[artist] || 0) + 1
+        }
+      }
+    }
+    var hasArtists = false
+    for (var k in artistNames) { hasArtists = true; break }
+    if (!hasArtists) return items
+    var out = []
+    var reclassified = 0
+    for (i = 0; i < items.length; i++) {
+      var it = items[i]
+      if (it && it.type === "MusicAlbum" && it.isFolder && it.name && artistNames[it.name]) {
+        var copy = {}
+        for (var key in it) copy[key] = it[key]
+        copy.type = "MusicArtist"
+        out.push(copy)
+        reclassified++
+      } else {
+        out.push(it)
+      }
+    }
+    if (reclassified) console.log("finamp: reclassified " + reclassified + " folder(s) as MusicArtist")
+    return out
   }
 
   function handleProbe() {
@@ -248,7 +289,7 @@ Item {
       if (j && j.ok) {
         root.mediaOk = true; root.mediaError = ""
         root.dataViews = (j.views || []).map(function(v){ return T.normalizeView(v) })
-        root.dataItems = (j.items || []).map(function(it){ return T.normalizeJellyfinItem(it) })
+        root.dataItems = root.reclassifyItems((j.items || []).map(function(it){ return T.normalizeJellyfinItem(it) }))
         root.serverName = String(j.serverName || "")
         root.serverVersion = String(j.serverVersion || "")
         root.serverId = String(j.serverId || "")
@@ -267,7 +308,7 @@ Item {
         else if (root.wizardPending || err.indexOf("Not Found") !== -1) root.statusText = "server needs setup — open the Jellyfin wizard"
         else root.statusText = "fetch failed: " + err
         // still surface cached views/items if present
-        if (j && (j.views || j.items)) { root.dataViews = (j.views||[]).map(T.normalizeView); root.dataItems = (j.items||[]).map(T.normalizeJellyfinItem); root.mediaOk = true; root.refreshTick++ }
+        if (j && (j.views || j.items)) { root.dataViews = (j.views||[]).map(T.normalizeView); root.dataItems = root.reclassifyItems((j.items||[]).map(T.normalizeJellyfinItem)); root.mediaOk = true; root.refreshTick++ }
         console.log("finamp: media error " + err)
       }
     } catch(e) { root.statusText = "media parse error: " + e }
@@ -630,5 +671,6 @@ Item {
     mkdirProc.running = true
     dlDirProc.command = ["/bin/sh", "-c", "d=$(xdg-user-dir DOWNLOAD 2>/dev/null || printf %s \"$HOME/Downloads\"); printf %s \"$d\""]
     dlDirProc.running = true
+    if (root.dataItems.length) root.dataItems = root.reclassifyItems(root.dataItems)
   }
 }
