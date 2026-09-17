@@ -44,7 +44,7 @@ function textAdvance(text, px) {
 
 function jellyfinImageUrl(server, itemId, tag, apiKey, w) {
   var s = normalizedServer(server)
-  if (!s || !itemId) return ""
+  if (!s || !itemId || String(itemId).indexOf(":") !== -1) return ""
   var u = s + "/Items/" + encodeURIComponent(String(itemId)) + "/Images/Primary"
   var q = []
   if (w) q.push("maxWidth=" + w)
@@ -99,6 +99,7 @@ function normalizeJellyfinItem(it) {
     season: it.ParentIndexNumber ? Number(it.ParentIndexNumber) : 0,
     album: String(it.Album || ""),
     artist: String(it.AlbumArtist || (it.AlbumArtists && it.AlbumArtists[0] ? it.AlbumArtists[0].Name : "") || ""),
+    genres: Array.isArray(it.Genres) ? it.Genres.map(function(g) { return String(g) }) : [],
     raw: it
   }
 }

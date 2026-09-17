@@ -65,12 +65,16 @@ Item {
   property string mediaError: ""
   property string statusText: "finamp — server not configured; hit Discover or fill in Settings"
   property int refreshTick: 0
+  property int uiTick: 0          // bumped whenever the row list must re-render (kind/query/year/dataItems)
 
   property string query: ""
-  property string kind: "all"        // all | Movie | Series | Episode | MusicAlbum | Audio | Video
+  property string kind: "all"        // all | Movie | Series | Episode | MusicAlbum | Audio | Video | year
+  property int year: 0               // ProductionYear filter (client-side, set when browsing a year)
+  property string genre: ""             // Genre filter (client-side, set when browsing a genre)
   property string viewId: ""         // present when drilling into a folder/library
   property string parentFilter: ""   // ParentId filter (folder drill)
   property bool showQueue: false
+  property var continuation: []   // library continuation (auto) tracks — queued AFTER the user's queue
 
   // ---- playback / queue ----
   property string phase: "stopped"   // stopped | playing | paused | ended
@@ -80,6 +84,81 @@ Item {
   property bool shuffle: false
   property bool repeat: false
   property string spectrumMode: "bars"   // bars | wave | circle | none — visualizer mode
+
+  // --- up-next preview ---
+  // Play-order lists that drive both the "next 10" preview and auto-playback.
+  // Recomputed when the library or shuffle toggle changes; the stream walks once
+  // through the whole list per pass so a shuffled pass never repeats tracks.
+  property var libraryOrder: []   // playable audio, album/track order (no shuffle)
+  property var shuffleOrder: []   // playable audio, randomized (shuffle on)
+  property var playOrder: []      // the active stream (libraryOrder or shuffleOrder)
+  property int feedPos: 0         // index into playOrder where continuation picks up next
+  property var playedSet: ({})    // ids already pulled into the stream this pass
+  function buildOrders() {
+    var pool = []
+    for (var i = 0; i < root.dataItems.length; i++) {
+      var it = root.dataItems[i]
+      if (it && !it.isFolder && (it.mediaType === "Audio" || it.type === "Audio")) pool.push(it)
+    }
+    root.libraryOrder = pool.slice()
+    root.libraryOrder.sort(function(a, b) {
+      var c = String(a.album || "").localeCompare(String(b.album || ""))
+      if (c !== 0) return c
+      c = (a.index || 0) - (b.index || 0)
+      if (c !== 0) return c
+      return String(a.name || "").localeCompare(String(b.name || ""))
+    })
+    root.shuffleOrder = pool.slice()
+    for (var s = root.shuffleOrder.length - 1; s > 0; s--) {
+      var r = Math.floor(Math.random() * (s + 1))
+      var tmp = root.shuffleOrder[s]
+      root.shuffleOrder[s] = root.shuffleOrder[r]
+      root.shuffleOrder[r] = tmp
+    }
+    root.playOrder = root.shuffle ? root.shuffleOrder : root.libraryOrder
+    root.feedPos = 0
+    root.playedSet = {}
+    root.continuation = []
+  }
+  // What actually plays next, as a fixed-size always-N preview:
+  // the user's queue overrides the library stream and fills the front, the rest
+  // comes from the continuous library stream (album order, or random if shuffled)
+  // which never repeats a track within a pass.
+  function upNext(n) {
+    var limit = Math.max(1, n || 10)
+    if (root.continuation.length < limit) root.appendLibraryBatch()
+    var out = []
+    var have = {}
+    if (root.current) have[String(root.current.id)] = 1
+    var start = root.queueIndex >= 0 ? root.queueIndex + 1 : 0
+    for (var m = start; m < root.queue.length && out.length < limit; m++) {
+      var q = root.queue[m]
+      if (!q || have[String(q.id)]) continue
+      have[String(q.id)] = 1
+      out.push(q)
+    }
+    for (var c = 0; c < root.continuation.length && out.length < limit; c++) {
+      var cc = root.continuation[c]
+      if (!cc || have[String(cc.id)]) continue
+      have[String(cc.id)] = 1
+      out.push(cc)
+    }
+    return out
+  }
+  function toggleShuffle() {
+    root.shuffle = !root.shuffle
+    root.buildOrders()
+    // keep the stream anchored after the track currently playing
+    if (root.current) {
+      var order = root.playOrder
+      for (var k = 0; k < order.length; k++) {
+        if (String(order[k].id) === String(root.current.id)) { root.feedPos = (k + 1) % order.length; break }
+      }
+    }
+    root.continuation = []
+    root.uiTick++
+    console.log("finamp: shuffle " + (root.shuffle ? "on" : "off"))
+  }
 
   function toggleDash() { root.dashVisible = !root.dashVisible; console.log("finamp: dash " + (root.dashVisible ? "open" : "close")) }
   property bool dashVisible: false
@@ -93,11 +172,24 @@ Item {
   function playItem(rec) {
     if (!rec) return
     if (rec.isFolder) { root.browseFolder(rec.id); return }
+    var startingFresh = !root.current || root.phase === "stopped"
     var idx = root.queueIndexForId(rec.id)
     if (idx < 0) { root.queue = root.queue.concat([rec]); idx = root.queue.length - 1 }
     root.queueIndex = idx
     root.current = rec
     root.phase = "playing"
+    root.uiTick++
+    if (startingFresh) {
+      // align the stream so "next 10" continues right after the picked track
+      root.buildOrders()
+      var order = root.playOrder
+      for (var k = 0; k < order.length; k++) {
+        if (String(order[k].id) === String(rec.id)) { root.feedPos = (k + 1) % order.length; break }
+      }
+      root.playedSet = {}
+      root.continuation = []
+    }
+    root.appendLibraryBatch()
     console.log("finamp: play " + String(rec.name || rec.id))
   }
   function browseFolder(id) {
@@ -105,30 +197,117 @@ Item {
     root.viewId = ""
     root.showQueue = false
     root.statusText = "Browsing folder…"
-    root.refreshTick++
+    root.tick()
     root.fetchMedia(null, null, root.parentFilter)
   }
   function browseUp() {
     root.parentFilter = ""
+    root.year = 0
+    root.genre = ""
     root.statusText = "back to library…"
+    root.tick()
     root.fetchMedia()
   }
-  function playNext() {
-    if (!root.queue.length) return
-    var i
-    if (root.shuffle && root.queue.length > 1) {
-      i = Math.floor(Math.random() * root.queue.length)
-      if (i === root.queueIndex) i = (i + 1) % root.queue.length
-    } else {
-      i = root.queueIndex + 1
-      if (i >= root.queue.length) {
-        if (root.repeat) i = 0
-        else { root.phase = "stopped"; return }
+  function randomLibraryPick() {
+    var pool = []
+    for (var i = 0; i < root.dataItems.length; i++) {
+      var it = root.dataItems[i]
+      if (it && !it.isFolder && (it.mediaType === "Audio" || it.type === "Audio")) pool.push(it)
+    }
+    if (!pool.length) return null
+    var pick = pool[Math.floor(Math.random() * pool.length)]
+    if (root.current && pool.length > 1 && String(pick.id) === String(root.current.id)) {
+      pick = pool[Math.floor(Math.random() * pool.length)]
+    }
+    return pick
+  }
+// Keep the continuation topped up to `target` (max 10) by walking playOrder
+// forward from feedPos, never pulling the same track twice within a pass. When
+// one whole pass is consumed it rotates to a fresh one (re-rolling shuffle) so
+// the next-10 window never shrinks.
+  function appendLibraryBatch() {
+    var order = root.playOrder
+    if (!order || !order.length) return false
+    var n = order.length
+    var target = Math.min(10, n)
+    if (root.continuation.length >= target) return true
+    var attempt = 0
+    while (root.continuation.length < target && attempt < 2) {
+      attempt++
+      var have = {}
+      if (root.current) have[String(root.current.id)] = 1
+      var scan = root.queue.concat(root.continuation)
+      for (var i = 0; i < scan.length; i++) if (scan[i]) have[String(scan[i].id)] = 1
+      var guard = 0
+      while (root.continuation.length < target && guard < n * 2) {
+        guard++
+        var it = order[root.feedPos % n]
+        root.feedPos = (root.feedPos + 1) % n
+        if (!it || have[String(it.id)] || root.playedSet[String(it.id)]) continue
+        root.continuation.push(it)
+        root.playedSet[String(it.id)] = 1
+      }
+      if (root.continuation.length >= target) break
+      // current pass exhausted — rotate to a fresh one and retry once
+      root.playedSet = {}
+      root.feedPos = 0
+      if (root.shuffle) {
+        var pool = root.libraryOrder.slice()
+        for (var s = pool.length - 1; s > 0; s--) {
+          var r = Math.floor(Math.random() * (s + 1))
+          var tmp = pool[s]; pool[s] = pool[r]; pool[r] = tmp
+        }
+        root.shuffleOrder = pool
+        root.playOrder = pool
+        order = pool
       }
     }
-    root.queueIndex = i
-    root.current = root.queue[i]
+    if (root.continuation.length) { root.uiTick++; return true }
+    return false
+  }
+  function playNext() {
+    // finish the current queued item — consume it so the queue never replays itself
+    if (root.queueIndex >= 0 && root.queue.length) {
+      var played = root.queueIndex
+      if (root.repeat && root.queue.length <= 1) {
+        var rep = root.queue[played]
+        root.phase = "stopped"
+        Qt.callLater(function() { root.current = Object.assign({}, rep); root.phase = "playing" })
+        return
+      }
+      root.queue = root.queue.slice(0, played).concat(root.queue.slice(played + 1))
+      root.queueIndex = -1
+      root.uiTick++
+    }
+    if (root.queue.length) {
+      // the user's queue always plays first
+      var i = root.shuffle && root.queue.length > 1 ? Math.floor(Math.random() * root.queue.length) : 0
+      root.queueIndex = i
+      root.current = root.queue[i]
+      root.phase = "playing"
+      root.uiTick++
+      return
+    }
+    // user queue consumed → play the library continuation stream
+    if (root.continuation.length < 10) root.appendLibraryBatch()
+    if (!root.continuation.length) root.appendLibraryBatch()   // pass just reset — kick off fresh one
+    if (root.continuation.length) {
+      root.current = root.continuation[0]
+      root.continuation = root.continuation.slice(1)
+      root.queueIndex = -1
+      root.phase = "playing"
+      root.uiTick++
+      root.appendLibraryBatch()   // refill so the next-10 stream never drains
+      return
+    }
+    // nothing at all to play
+    var pick = root.randomLibraryPick()
+    if (!pick) { root.phase = "stopped"; return }
+    root.queueIndex = -1
+    root.current = pick
     root.phase = "playing"
+    root.uiTick++
+    console.log("finamp: queue done — continuing from library with " + String(pick.name || pick.id))
   }
   function playPrev() {
     if (!root.queue.length) return
@@ -159,10 +338,20 @@ Item {
         var nq = root.queue.slice()
         nq.splice(i, 1)
         root.queue = nq
+        root.uiTick++
         if (root.current && String(root.current.id) === String(id)) { root.current = null; root.queueIndex = -1; root.phase = "stopped" }
         else if (i < root.queueIndex) root.queueIndex = root.queueIndex - 1
         else if (i === root.queueIndex) root.queueIndex = -1
-        return
+        break
+      }
+    }
+    for (var ci = 0; ci < root.continuation.length; ci++) {
+      if (root.continuation[ci] && String(root.continuation[ci].id) === String(id)) {
+        var nc = root.continuation.slice()
+        nc.splice(ci, 1)
+        root.continuation = nc
+        root.uiTick++
+        break
       }
     }
   }
@@ -175,8 +364,8 @@ Item {
     }
     root.playItem(rec)
   }
-  function enqueue(rec) { if (!rec || rec.isFolder) return; var idx = root.queueIndexForId(rec.id); if (idx < 0) root.queue = root.queue.concat([rec]) }
-  function clearQueue() { root.queue = []; root.queueIndex = -1; root.current = null; root.phase = "stopped" }
+  function enqueue(rec) { if (!rec || rec.isFolder) return; var idx = root.queueIndexForId(rec.id); if (idx < 0) { root.queue = root.queue.concat([rec]); root.uiTick++ } }
+  function clearQueue() { root.queue = []; root.continuation = []; root.queueIndex = -1; root.current = null; root.phase = "stopped"; root.uiTick++ }
 
   function saveKey(key, val) {
     if (["serverUrl","apiKey","userId","plexToken","clientId"].indexOf(key) === -1) return
@@ -211,7 +400,8 @@ Item {
     mediaProc.command = ["/usr/bin/python3", helperMedia, srv, key, root.userId, pid ? root.cacheBrowse : root.cacheMedia, root.libraryOnly, pid]
     mediaProc.running = true
   }
-  function refresh() { root.refreshTick++; root.fetchMedia() }
+  function tick() { root.refreshTick++; root.uiTick++ }
+  function refresh() { root.tick(); root.fetchMedia() }
 
   function hydrateCache() {
     var t = cacheMediaFile.text()
@@ -225,7 +415,7 @@ Item {
         root.serverVersion = String(c.serverVersion || "")
         root.userId = String(c.userId || "")
         root.mediaOk = true
-        root.refreshTick++
+        root.tick()
         console.log("finamp: cached " + root.dataItems.length + " items")
       }
     } catch(e) { }
@@ -294,7 +484,7 @@ Item {
         root.serverVersion = String(j.serverVersion || "")
         root.serverId = String(j.serverId || "")
         root.wizardPending = !!j.wizard
-        root.refreshTick++
+        root.tick()
         root.statusText = "library: " + root.dataViews.length + " views · " + root.dataItems.length + " items · " + (root.serverName || "Jellyfin") + " " + root.serverVersion
         console.log("finamp: loaded " + root.dataItems.length + " items")
       } else {
@@ -308,7 +498,7 @@ Item {
         else if (root.wizardPending || err.indexOf("Not Found") !== -1) root.statusText = "server needs setup — open the Jellyfin wizard"
         else root.statusText = "fetch failed: " + err
         // still surface cached views/items if present
-        if (j && (j.views || j.items)) { root.dataViews = (j.views||[]).map(T.normalizeView); root.dataItems = root.reclassifyItems((j.items||[]).map(T.normalizeJellyfinItem)); root.mediaOk = true; root.refreshTick++ }
+        if (j && (j.views || j.items)) { root.dataViews = (j.views||[]).map(T.normalizeView); root.dataItems = root.reclassifyItems((j.items||[]).map(T.normalizeJellyfinItem)); root.mediaOk = true; root.tick() }
         console.log("finamp: media error " + err)
       }
     } catch(e) { root.statusText = "media parse error: " + e }
@@ -664,6 +854,8 @@ Item {
     if (root.serverUrl) { root.fetchMedia() }
     else if (root.dataItems.length === 0) { root.discover() }
   } }
+
+  onDataItemsChanged: root.buildOrders()
 
   Component.onCompleted: {
     console.log("finamp: starting — cacheDir " + cacheDir)

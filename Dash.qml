@@ -52,10 +52,12 @@ Item {
 
   function kindOptions() {
     if (svc && svc.libraryOnly === "music")
-      return [{ label: "All", value: "all" }, { label: "Artists", value: "MusicArtist" }, { label: "Albums", value: "MusicAlbum" }, { label: "Songs", value: "Audio" }]
-    return [{ label: "All", value: "all" }, { label: "Movies", value: "Movie" }, { label: "Shows", value: "Series" }, { label: "Episodes", value: "Episode" }, { label: "Albums", value: "MusicAlbum" }, { label: "Songs", value: "Audio" }, { label: "Artists", value: "MusicArtist" }, { label: "Videos", value: "Video" }]
+      return [{ label: "All", value: "all" }, { label: "Artist", value: "MusicArtist" }, { label: "Album", value: "MusicAlbum" }, { label: "Song", value: "Audio" }, { label: "Year", value: "year" }, { label: "Genre", value: "genre" }]
+    return [{ label: "All", value: "all" }, { label: "Movie", value: "Movie" }, { label: "Series", value: "Series" }, { label: "Episode", value: "Episode" }, { label: "Artist", value: "MusicArtist" }, { label: "Album", value: "MusicAlbum" }, { label: "Song", value: "Audio" }, { label: "Year", value: "year" }, { label: "Genre", value: "genre" }, { label: "Video", value: "Video" }]
   }
   function filterLabel() {
+    if (svc && svc.genre) return svc.genre
+    if (svc && svc.year) return String(svc.year)
     var o = root.kindOptions()
     var k = svc ? svc.kind : "all"
     for (var i = 0; i < o.length; i++) if (o[i].value === k) return o[i].label
@@ -70,6 +72,38 @@ Item {
     var k = svc.kind
     var q = svc.query.trim().toLowerCase()
     var par = svc.parentFilter
+    var yrFil = svc.year
+    var gnFil = svc.genre
+    if (k === "year") {
+      var seen = {}
+      var yrRows = []
+      for (var iy = 0; iy < items.length; iy++) {
+        var yy = items[iy] && Number(items[iy].year || 0)
+        if (!yy || seen[String(yy)]) continue
+        seen[String(yy)] = 1
+        yrRows.push({ id: "year:" + yy, name: String(yy), year: yy, isFolder: true, type: "Year" })
+      }
+      yrRows.sort(function(a, b) { return b.year - a.year })
+      if (q) yrRows = yrRows.filter(function(r) { return String(r.name).toLowerCase().indexOf(q) !== -1 })
+      return yrRows
+    }
+    if (k === "genre") {
+      var seenG = {}
+      var gnRows = []
+      for (var ig = 0; ig < items.length; ig++) {
+        var gs = items[ig] && items[ig].genres
+        if (!gs) continue
+        for (var gg = 0; gg < gs.length; gg++) {
+          var g = String(gs[gg])
+          if (!g || seenG[g]) continue
+          seenG[g] = 1
+          gnRows.push({ id: "genre:" + g, name: g, genre: g, isFolder: true, type: "Genre" })
+        }
+      }
+      gnRows.sort(function(a, b) { return String(a.name).localeCompare(String(b.name)) })
+      if (q) gnRows = gnRows.filter(function(r) { return String(r.name).toLowerCase().indexOf(q) !== -1 })
+      return gnRows
+    }
     var idParent = {}
     for (var i = 0; i < items.length; i++) if (items[i] && items[i].id) idParent[String(items[i].id)] = String(items[i].parentId || "")
     function isWithin(id, top) {
@@ -84,6 +118,8 @@ Item {
       if (String(it.id) === par) continue
       if (par && !isWithin(String(it.id), par)) continue
       if (k !== "all" && String(it.type) !== k) continue
+      if (yrFil && Number(it.year) !== yrFil) continue
+      if (gnFil && !(it.genres && it.genres.indexOf(gnFil) !== -1)) continue
       if (q && String(it.name + " " + it.artist + " " + it.album).toLowerCase().indexOf(q) === -1) continue
       out.push(it)
     }
@@ -94,6 +130,9 @@ Item {
     var out = []
     if (!ready) return out
     for (var i = 0; i < svc.queue.length; i++) out.push({ it: svc.queue[i], cur: i === svc.queueIndex, idx: i })
+    if (svc.continuation && svc.continuation.length) {
+      for (var c = 0; c < svc.continuation.length; c++) out.push({ it: svc.continuation[c], cur: false, idx: -1, auto: true })
+    }
     return out
   }
   function isDownloaded(rec) { return !!svc && svc.isDownloaded(rec) }
@@ -178,7 +217,19 @@ Item {
     audioOutput: audio
     videoOutput: videoOut2
     playbackRate: root.speed
-    onPlaybackStateChanged: { if (svc) { if (media.playbackState === MediaPlayer.StoppedState && media.position >= (media.duration||0) - 1000) svc.playNext(); svc.phase = media.playbackState === MediaPlayer.PlayingState ? "playing" : (media.playbackState === MediaPlayer.PausedState ? "paused" : "stopped") } }
+    onPlaybackStateChanged: {
+      if (!svc) return
+      if (media.playbackState === MediaPlayer.StoppedState) {
+        // Only treat this as end-of-track when a track actually reached its
+        // end. `duration` is 0 while loading / after stop(), so without this
+        // guard every stop() (e.g. from startPlayback) looks like EOS and
+        // cascades playNext through the whole library.
+        if (media.duration > 0 && media.position >= media.duration - 1000) { Qt.callLater(function() { svc.playNext() }); return }
+        svc.phase = "stopped"
+        return
+      }
+      svc.phase = media.playbackState === MediaPlayer.PlayingState ? "playing" : "paused"
+    }
     onErrorOccurred: function(error, errStr) { if (error !== MediaPlayer.NoError && svc) svc.statusText = "playback: " + errStr }
   }
 
@@ -402,7 +453,7 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
               RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
-                Comp.TransportButton { width: 60; height: 30; radius: 15; Layout.preferredWidth: 60; Layout.preferredHeight: 30; label: "SHUF"; glyph: "🔀"; glyphSize: 11; selected: svc ? svc.shuffle : false; onClicked: { if (svc) svc.shuffle = !svc.shuffle } }
+                Comp.TransportButton { width: 60; height: 30; radius: 15; Layout.preferredWidth: 60; Layout.preferredHeight: 30; label: "SHUF"; glyph: "🔀"; glyphSize: 11; selected: svc ? svc.shuffle : false; onClicked: { if (svc) svc.toggleShuffle() } }
                 Comp.TransportButton { width: 60; height: 30; radius: 15; Layout.preferredWidth: 60; Layout.preferredHeight: 30; label: "REP"; glyph: "🔁"; glyphSize: 11; selected: svc ? svc.repeat : false; onClicked: { if (svc) svc.repeat = !svc.repeat } }
                 Item { Layout.fillWidth: true }
                       Comp.TransportButton { width: 60; height: 30; radius: 15; Layout.preferredWidth: 60; Layout.preferredHeight: 30; label: "EQ"; glyph: "〽"; glyphSize: 11; selected: root.eqOpen; onClicked: root.eqOpen = !root.eqOpen }
@@ -465,7 +516,7 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
                   }
                 }
                 Item { Layout.fillWidth: true; Layout.preferredHeight: 1 }
-                Comp.TransportButton { width: 30; height: 26; radius: 13; Layout.preferredWidth: 30; Layout.preferredHeight: 26; glyph: "↩"; glyphSize: 12; visible: root.viewMode === "library" && svc && !!svc.parentFilter; onClicked: { if (svc) svc.browseUp() } }
+                Comp.TransportButton { width: 30; height: 26; radius: 13; Layout.preferredWidth: 30; Layout.preferredHeight: 26; glyph: "↩"; glyphSize: 12; visible: root.viewMode === "library" && svc && (!!svc.parentFilter || !!svc.year || !!svc.genre); onClicked: { if (svc) svc.browseUp() } }
                 Item {
                   id: kindDrop
                   visible: root.viewMode === "library"
@@ -501,7 +552,7 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
                       color: Util.alpha(Color.foreground, 0.4); font.family: Style.font.family; font.pixelSize: 10
                       MouseArea { anchors.fill: parent; cursorShape: Qt.IBeamCursor; onClicked: searchInput.forceActiveFocus() }
                     }
-                    onTextChanged: { if (svc) svc.query = text }
+                    onTextChanged: { if (svc) { svc.query = text; svc.uiTick++ } }
                   }
                   Text { anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; visible: searchInput.text !== ""; text: "✕"; color: Util.alpha(Color.foreground, 0.5); font.pixelSize: 10; MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { searchInput.text = "" } } }
                 }
@@ -510,8 +561,8 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
               // breadcrumb when drilling into a folder
               Text {
                 Layout.fillWidth: true
-                visible: root.viewMode === "library" && svc && !!svc.parentFilter
-                text: "📍 " + root.parentPath() + " — " + root.libraryRows().length + " results (click ↩ to go up)"
+                visible: root.viewMode === "library" && svc && (!!svc.parentFilter || !!svc.year || !!svc.genre)
+                text: "📍 " + (svc && svc.genre ? "Genre " + svc.genre : (svc && svc.year ? "Year " + svc.year : root.parentPath())) + " — " + root.libraryRows().length + " results (click ↩ to go up)"
                 color: Util.alpha(Color.foreground, 0.4); font.family: Style.font.family; font.pixelSize: 8
               }
 
@@ -583,7 +634,7 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
                 clip: true
                 spacing: 6
                 visible: root.viewMode !== "playlists" || root.viewingPlaylistId !== ""
-                model: root.viewMode === "queue" ? root.queueRows() : root.viewMode === "playlists" ? root.playlistItemRows() : root.libraryRows()
+                model: root.viewMode === "queue" ? root.queueRows() : root.viewMode === "playlists" ? root.playlistItemRows() : ((svc ? svc.uiTick : 0), root.libraryRows())
                 delegate: Item {
                   required property var modelData
                   id: row
@@ -629,7 +680,7 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
                       anchors.fill: parent
                       hoverEnabled: true
                       cursorShape: Qt.PointingHandCursor
-                      onClicked: { if (svc) { console.log("finamp click id=" + String(row.it && row.it.id) + " name=" + String(row.it && row.it.name)); svc.playItem(row.it) } }
+                      onClicked: { if (svc) { console.log("finamp click id=" + String(row.it && row.it.id) + " name=" + String(row.it && row.it.name)); var rid = String(row.it && row.it.id || ""); if (row.it && row.it.isFolder && rid.indexOf("year:") === 0) { svc.year = Number(row.it.name); svc.genre = ""; svc.kind = "all"; svc.uiTick++; svc.statusText = "showing year " + row.it.name } else if (row.it && row.it.isFolder && rid.indexOf("genre:") === 0) { svc.genre = row.it.name; svc.year = 0; svc.kind = "all"; svc.uiTick++; svc.statusText = "showing genre " + row.it.name } else { svc.playItem(row.it) } } }
                     }
                     Row {
                       id: rowActions
@@ -640,9 +691,9 @@ Component.onCompleted: console.log("finamp Dash: ready=" + ready)
                       z: 5
                       Comp.TransportButton { width: 26; height: 26; glyph: svc && svc.isDownloaded(row.it) ? "⤓✓" : (svc && svc.downloading && String(svc.pendingDownloadId) === String(row.it && row.it.id) ? "…" : "⤓"); glyphSize: 10; selected: svc && svc.isDownloaded(row.it); visible: !(row.it && row.it.isFolder); onClicked: { if (svc && row.it) svc.isDownloaded(row.it) ? svc.offload(row.it) : svc.download(row.it) } }
                       Comp.TransportButton { width: 26; height: 26; glyph: "▶"; glyphSize: 9; visible: !(row.it && row.it.isFolder) && !(modelData.cur || (svc && svc.current && String(svc.current.id) === String(row.it.id))); onClicked: { if (svc) svc.playItem(row.it) } }
-                      Comp.TransportButton { width: 26; height: 26; glyph: "⧉"; glyphSize: 10; visible: !(row.it && row.it.isFolder) && root.viewMode !== "queue"; onClicked: { if (svc) svc.enqueue(row.it) } }
+                      Comp.TransportButton { width: 26; height: 26; glyph: root.inQueue(row.it) ? "✕" : "⧉"; glyphSize: 10; selected: root.inQueue(row.it); visible: !(row.it && row.it.isFolder) && root.viewMode !== "queue"; onClicked: { if (svc) { if (root.inQueue(row.it)) { svc.removeFromQueue(row.it.id); svc.statusText = "removed from queue: " + String(row.it.name || "") } else { svc.enqueue(row.it); svc.statusText = "added to queue: " + String(row.it.name || "") } } } }
                       Comp.TransportButton { width: 48; height: 26; glyph: "▤"; glyphSize: 10; visible: !(row.it && row.it.isFolder) && root.viewMode === "library"; onClicked: { root.kindDropOpen = false; root.playlistPickerTarget = row.it; root.playlistAnchor = row } }
-                      Comp.TransportButton { width: 26; height: 26; glyph: "✕"; glyphSize: 10; selected: root.viewMode === "queue" || root.inQueue(row.it) || root.viewMode === "playlists"; visible: !(row.it && row.it.isFolder) && (root.inQueue(row.it) || root.viewMode === "queue" || (root.viewMode === "playlists" && root.viewingPlaylistId !== "")); onClicked: { if (root.viewMode === "playlists" && root.viewingPlaylistId !== "") { if (svc) svc.removeFromPlaylist(root.viewingPlaylistId, row.it); if (svc) svc.statusText = "removed from playlist: " + String(row.it.name || "") } else { if (svc) svc.removeFromQueue(row.it.id); if (svc) svc.statusText = "removed from queue: " + String(row.it.name || "") } } }
+                      Comp.TransportButton { width: 26; height: 26; glyph: "✕"; glyphSize: 10; selected: root.viewMode === "queue" || root.inQueue(row.it) || root.viewMode === "playlists"; visible: !(row.it && row.it.isFolder) && (root.viewMode === "queue" || (root.viewMode === "playlists" && root.viewingPlaylistId !== "")); onClicked: { if (root.viewMode === "playlists" && root.viewingPlaylistId !== "") { if (svc) svc.removeFromPlaylist(root.viewingPlaylistId, row.it); if (svc) svc.statusText = "removed from playlist: " + String(row.it.name || "") } else { if (svc) svc.removeFromQueue(row.it.id); if (svc) svc.statusText = "removed from queue: " + String(row.it.name || "") } } }
                     }
                   }
                 }
@@ -774,24 +825,27 @@ MouseArea { anchors.fill: parent; onClicked: {} }
       anchors.fill: parent
       z: 100
 
-      // press-outside / scrim to dismiss whichever menu is open
-      MouseArea {
+      // press-outside to dismiss whichever menu is open (transparent — menus are non-modal)
+      Rectangle {
         id: menuScrim
         anchors.fill: parent
         visible: root.kindDropOpen || !!root.playlistPickerTarget
-        onClicked: { root.kindDropOpen = false; root.playlistPickerTarget = null }
+        color: "transparent"
+        MouseArea { anchors.fill: parent; onClicked: { root.kindDropOpen = false; root.playlistPickerTarget = null } }
       }
 
-      // ---- BROWSE MENU (All / Songs / Albums / Artists) ----
+      // ---- BROWSE MENU (All / Artist / Album / Song / Year) ----
       Rectangle {
         id: browseOverlay
         visible: root.kindDropOpen
         width: 190
+        height: 22 + root.kindOptions().length * 30 + 2
         radius: 12
-        color: Util.alpha(Color.background, 0.98)
-        border.width: 1; border.color: Util.alpha(Color.accent, 0.35)
-        x: kindDrop.mapToItem(menuLayer, 0, 0).x + kindDrop.width - width
-        y: kindDrop.mapToItem(menuLayer, 0, 0).y + kindDrop.height + 6
+        color: Color.popups.background
+        border.width: 1; border.color: Color.popups.border
+        x: ((root.kindDropOpen ? 0 : 0) + (kindDrop.x + kindDrop.y) * 0, Math.min(Math.max(6, kindDrop.mapToItem(card, 0, 0).x), card.width - width - 6))
+        y: ((root.kindDropOpen ? 0 : 0) + (kindDrop.x + kindDrop.y) * 0, Math.min(Math.max(6, kindDrop.mapToItem(card, 0, 0).y + kindDrop.height + 6), card.height - height - 6))
+        onVisibleChanged: if (visible) console.log("finamp browseOverlay x=" + x + " y=" + y + " h=" + height + " (raw=" + Math.round(kindDrop.mapToItem(card, 0, 0).x + kindDrop.width - width) + "," + Math.round(kindDrop.mapToItem(card, 0, 0).y + kindDrop.height + 6) + ") card=" + Math.round(card.width) + "x" + Math.round(card.height))
         Column {
           Rectangle { width: parent.width; height: 22; color: "transparent"
             Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: "BROWSE"; color: Util.alpha(Color.accent, 0.85); font.family: Style.font.family; font.pixelSize: 8; font.bold: true }
@@ -806,7 +860,7 @@ MouseArea { anchors.fill: parent; onClicked: {} }
                 Text { Layout.fillWidth: true; elide: Text.ElideRight; text: modelData.label; color: modelData.value === (svc && svc.kind) ? Color.accent : Color.foreground; font.family: Style.font.family; font.pixelSize: 11; font.bold: modelData.value === (svc && svc.kind) }
                 Text { text: modelData.value === (svc && svc.kind) ? "✓" : ""; color: Color.accent; font.pixelSize: 10 }
               }
-              MouseArea { id: optHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (svc) { svc.kind = modelData.value; svc.showQueue = false } root.kindDropOpen = false } }
+              MouseArea { id: optHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (svc) { svc.kind = modelData.value; svc.year = 0; svc.genre = ""; svc.showQueue = false; svc.uiTick++ } root.kindDropOpen = false } }
             }
           }
         }
@@ -817,11 +871,12 @@ MouseArea { anchors.fill: parent; onClicked: {} }
         id: playlistOverlay
         visible: !!root.playlistPickerTarget
         width: 210
+        height: 22 + (svc && svc.playlists ? svc.playlists.length : 0) * 30 + 3
         radius: 12
-        color: Util.alpha(Color.background, 0.98)
-        border.width: 1; border.color: Util.alpha(Color.accent, 0.3)
-        x: root.playlistAnchor ? root.playlistAnchor.mapToItem(menuLayer, 0, 0).x + root.playlistAnchor.width - width : 0
-        y: (root.playlistAnchor ? root.playlistAnchor.mapToItem(menuLayer, 0, 0).y + root.playlistAnchor.height + 6 : 0)
+        color: Color.popups.background
+        border.width: 1; border.color: Color.popups.border
+        x: root.playlistAnchor ? ((root.playlistPickerTarget ? 0 : 0) + root.playlistAnchor.y * 0, Math.min(Math.max(6, root.playlistAnchor.mapToItem(card, 0, 0).x + root.playlistAnchor.width - width), card.width - width - 6)) : 0
+        y: (root.playlistAnchor ? ((root.playlistPickerTarget ? 0 : 0) + root.playlistAnchor.y * 0, Math.min(Math.max(6, root.playlistAnchor.mapToItem(card, 0, 0).y + root.playlistAnchor.height + 6), card.height - height - 6)) : 0)
         Column {
           RowLayout { width: parent.width; spacing: 6
             Text {

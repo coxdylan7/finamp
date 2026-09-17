@@ -238,7 +238,7 @@ def main():
                 page = get_json(f"/Users/{uid}/Items", {
                     "ParentId": parent_id, "Recursive": "true",
                     "IncludeItemTypes": item_types,
-                    "Fields": "Overview,ProductionYear,RuntimeTicks,PrimaryImageAspectRatio",
+                    "Fields": "Overview,ProductionYear,RuntimeTicks,PrimaryImageAspectRatio,Genres",
                     "SortBy": "SortName", "SortOrder": "Ascending",
                     "StartIndex": str(start), "Limit": str(ITEM_LIMIT)
                 })
@@ -274,7 +274,7 @@ def main():
                 page = get_json(f"/Users/{uid}/Items", {
                     "ParentId": view_parent, "Recursive": "true",
                     "IncludeItemTypes": item_types,
-                    "Fields": "Overview,ProductionYear,RuntimeTicks,PrimaryImageAspectRatio",
+                    "Fields": "Overview,ProductionYear,RuntimeTicks,PrimaryImageAspectRatio,Genres",
                     "SortBy": "SortName", "SortOrder": "Ascending",
                     "StartIndex": str(start), "Limit": str(ITEM_LIMIT)
                 })

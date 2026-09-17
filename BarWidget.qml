@@ -36,24 +36,15 @@ BarWidget {
   function nextUp() {
     var s = root.service
     if (!s) return []
-    var q = s.queue || []
-    if (q.length > 1) {
-      var i = s.queueIndex >= 0 ? s.queueIndex + 1 : 0
-      var out = []
-      var guard = 0
-      while (out.length < 6 && guard < q.length * 2) {
-        guard++
-        if (!q[i]) break
-        out.push(q[i])
-        i = (i + 1) % q.length
-      }
-      return out
-    }
+    if (typeof s.upNext === "function") return s.upNext(10)
+    // fallback: ordered preview from the library
     var items = s.dataItems || []
-    var pool = []
-    for (var k = 0; k < items.length; k++) { var it = items[k]; if (it && !it.isFolder && (!s.current || String(it.id) !== String(s.current.id))) pool.push(it) }
-    if (s.shuffle) pool.sort(function(){ return Math.random() - 0.5 })
-    return pool.slice(0, 8)
+    var out = []
+    for (var i = 0; i < items.length && out.length < 10; i++) {
+      var it = items[i]
+      if (it && !it.isFolder && (it.mediaType === "Audio" || it.type === "Audio")) out.push(it)
+    }
+    return out
   }
 
   implicitWidth: Math.max(96, T.textAdvance(root.waveText, 11) + 14)
@@ -155,15 +146,15 @@ BarWidget {
 
       Text { Layout.fillWidth: true; text: root.statusLine; color: root.dlActive ? Color.accent : Util.alpha(Color.foreground, 0.5); font.family: Style.font.family; font.pixelSize: 9; elide: Text.ElideRight }
 
-      Rectangle { Layout.fillWidth: true; height: 1; color: Util.alpha(Color.foreground, 0.08); visible: root.nextUp().length > 0 }
+      Rectangle { Layout.fillWidth: true; height: 1; color: Util.alpha(Color.foreground, 0.08); visible: ((service ? service.uiTick : 0) * 0, root.nextUp()).length > 0 }
 
       ColumnLayout {
         Layout.fillWidth: true
         spacing: 4
-        visible: root.nextUp().length > 0
-        Text { Layout.fillWidth: true; text: root.service && root.service.queue && root.service.queue.length > 1 ? "UP NEXT" : "NEXT"; color: Util.alpha(Color.accent, 0.9); font.family: Style.font.family; font.pixelSize: 9; font.bold: true }
+        visible: ((service ? service.uiTick : 0) * 0, root.nextUp()).length > 0
+        Text { Layout.fillWidth: true; text: "UP NEXT"; color: Util.alpha(Color.accent, 0.9); font.family: Style.font.family; font.pixelSize: 9; font.bold: true }
         Repeater {
-          model: root.nextUp()
+          model: ((service ? service.uiTick : 0) * 0, root.nextUp())
           delegate: RowLayout {
             required property var modelData
             required property int index
